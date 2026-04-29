@@ -13,7 +13,12 @@ import {
   SERVER_MESSAGE_TYPES,
   TANK_ARCHETYPE_CONFIG,
   TANK_ARCHETYPES,
+  clampToArena,
+  generateArenaConfig,
+  isWallCollision,
   type AbilityMessagePayload,
+  type ArenaConfig,
+  type ArenaPoint,
   type ErrorMessageCode,
   type FireMessagePayload,
   type InputMessagePayload,
@@ -34,6 +39,10 @@ const DANGER_AFTER_RUNNING_MS = 90_000;
 const FINAL_ZONE_AFTER_RUNNING_MS = 150_000;
 const FINISHED_AFTER_RUNNING_MS = 210_000;
 const MAX_DISPLAY_NAME_LENGTH = 18;
+const DEFAULT_ARENA_SIZE = 2_200;
+const TANK_COLLISION_RADIUS = 28;
+const MAX_SIMULATION_DELTA_MS = 100;
+const INPUT_INTENT_TTL_MS = 300;
 
 const makeRoomCode = (): string => Math.random().toString(36).slice(2, 8).toUpperCase();
 
@@ -69,6 +78,20 @@ interface StoredAbilityIntent extends Required<Pick<AbilityMessagePayload, "sequ
   receivedAt: number;
 }
 
+interface ArenaBounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  width?: number;
+  height?: number;
+}
+
+type MutableAlpha7StateSchema = Alpha7StateSchema & {
+  arenaConfigJson?: string;
+  mapConfigJson?: string;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -79,6 +102,40 @@ const isBoolean = (value: unknown): value is boolean => typeof value === "boolea
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
+
+const positiveNumberOr = (value: number | undefined, fallback: number): number =>
+  value !== undefined && Number.isFinite(value) && value > 0 ? value : fallback;
+
+const angleTo = (fromX: number, fromY: number, toX: number, toY: number): number =>
+  Math.atan2(toY - fromY, toX - fromX);
+
+const getArenaBounds = (arena: ArenaConfig): ArenaBounds => {
+  const compatibilityBounds = (arena as ArenaConfig & { bounds?: ArenaBounds }).bounds;
+  if (compatibilityBounds) return compatibilityBounds;
+  const width = positiveNumberOr(arena.width, DEFAULT_ARENA_SIZE);
+  const height = positiveNumberOr(arena.height, DEFAULT_ARENA_SIZE);
+  return {
+    minX: 0,
+    minY: 0,
+    maxX: width,
+    maxY: height,
+    width,
+    height
+  };
+};
+
+const clampArenaBounds = (
+  arena: ArenaConfig,
+  x: number,
+  y: number,
+  radius: number
+): ArenaPoint => {
+  const bounds = getArenaBounds(arena);
+  return {
+    x: clamp(x, bounds.minX + radius, bounds.maxX - radius),
+    y: clamp(y, bounds.minY + radius, bounds.maxY - radius)
+  };
+};
 
 const intervalFromRate = (rate: number, fallback: number): number => {
   const safeRate = Number.isFinite(rate) && rate > 0 ? rate : fallback;
@@ -262,8 +319,10 @@ const alivePlayerCount = (state: Alpha7StateSchema): number => {
 
 export class BattleRoyaleRoom extends Room<Alpha7StateSchema, BattleRoyaleRoomMetadata> {
   private config?: ServerConfig;
+  private arena?: ArenaConfig;
   private isPrivateRoom = false;
   private autoStartTimer?: Delayed;
+  private runningStartedAt = 0;
   private dangerStartsAt = 0;
   private finalZoneStartsAt = 0;
   private finishedAt = 0;
@@ -290,6 +349,12 @@ export class BattleRoyaleRoom extends Room<Alpha7StateSchema, BattleRoyaleRoomMe
     state.match.matchId = `${state.roomCode}-${Date.now().toString(36)}`;
     state.match.stateStartedAt = Date.now();
     this.setState(state);
+    this.arena = generateArenaConfig({
+      seed: state.seed,
+      playerCount: config.demoMaxPlayers
+    });
+    this.syncArenaConfig();
+    this.applyZonePhase("waiting", state.match.stateStartedAt);
 
     await this.setPrivate(this.isPrivateRoom);
     await this.updateMetadata();
@@ -328,16 +393,16 @@ export class BattleRoyaleRoom extends Room<Alpha7StateSchema, BattleRoyaleRoomMe
     if (!player) return;
     const wasCountingDown = this.state.matchState === "countdown";
 
+    this.inputIntents.delete(client.sessionId);
+    this.fireIntents.delete(client.sessionId);
+    this.abilityIntents.delete(client.sessionId);
+    this.rematchVotes.delete(client.sessionId);
+
     if (this.state.matchState === "waiting" || this.state.matchState === "countdown") {
       this.state.players.delete(client.sessionId);
-      this.inputIntents.delete(client.sessionId);
-      this.fireIntents.delete(client.sessionId);
-      this.abilityIntents.delete(client.sessionId);
-      this.rematchVotes.delete(client.sessionId);
     } else {
       player.isConnected = false;
       player.isAlive = false;
-      this.rematchVotes.delete(client.sessionId);
     }
 
     this.ensureHost();
@@ -398,6 +463,7 @@ export class BattleRoyaleRoom extends Room<Alpha7StateSchema, BattleRoyaleRoomMe
     player.isAlive = true;
     player.isConnected = true;
     player.isSpectator = false;
+    this.assignSpawnPosition(player, this.state.players.size);
     return player;
   }
 
@@ -483,6 +549,8 @@ export class BattleRoyaleRoom extends Room<Alpha7StateSchema, BattleRoyaleRoomMe
       return;
     }
 
+    const current = this.inputIntents.get(client.sessionId);
+    if (current && parsed.sequence < current.sequence) return;
     this.inputIntents.set(client.sessionId, parsed);
   }
 
@@ -550,9 +618,13 @@ export class BattleRoyaleRoom extends Room<Alpha7StateSchema, BattleRoyaleRoomMe
     this.broadcastSystem("rematch", `${player.name} updated rematch vote`);
   }
 
-  private onSimulationTick(_deltaTime: number): void {
+  private onSimulationTick(deltaTime: number): void {
+    const now = Date.now();
     this.state.match.tick += 1;
-    this.advanceTimedLifecycle(Date.now());
+    this.advanceTimedLifecycle(now);
+    if (this.isActiveMatchState()) {
+      this.applyAuthoritativeMovement(deltaTime, now);
+    }
   }
 
   private advanceTimedLifecycle(now: number): void {
@@ -597,11 +669,13 @@ export class BattleRoyaleRoom extends Room<Alpha7StateSchema, BattleRoyaleRoomMe
   }
 
   private startRunning(now: number): void {
-    this.dangerStartsAt = now + DANGER_AFTER_RUNNING_MS;
-    this.finalZoneStartsAt = now + FINAL_ZONE_AFTER_RUNNING_MS;
-    this.finishedAt = now + FINISHED_AFTER_RUNNING_MS;
+    this.runningStartedAt = now;
+    this.dangerStartsAt = this.zonePhaseStartAt("danger", now, DANGER_AFTER_RUNNING_MS);
+    this.finalZoneStartsAt = this.zonePhaseStartAt("final_zone", now, FINAL_ZONE_AFTER_RUNNING_MS);
+    this.finishedAt = this.zoneFinishAt(now, FINISHED_AFTER_RUNNING_MS);
     this.state.match.countdownEndsAt = 0;
     this.state.match.matchEndsAt = this.finishedAt;
+    this.resetPlayersForMatchStart();
     this.state.match.alivePlayers = alivePlayerCount(this.state);
     this.transitionTo("running", now);
   }
@@ -609,9 +683,223 @@ export class BattleRoyaleRoom extends Room<Alpha7StateSchema, BattleRoyaleRoomMe
   private transitionTo(matchState: MatchState, at: number): void {
     this.state.setMatchState(matchState);
     this.state.match.stateStartedAt = at;
-    this.state.zonePhase.startsAt = at;
+    this.applyZonePhase(matchState, at);
     this.broadcastSystem("match_state", `Match state changed to ${matchState}`);
     void this.updateMetadata();
+  }
+
+  private syncArenaConfig(): void {
+    if (!this.arena) return;
+    const arenaConfigJson = JSON.stringify(this.arena);
+    const state = this.state as MutableAlpha7StateSchema;
+    state.arenaConfigJson = arenaConfigJson;
+    state.mapConfigJson = arenaConfigJson;
+  }
+
+  private assignSpawnPosition(player: PlayerSchema, index: number): void {
+    const spawnPoints = this.arena?.spawnPoints;
+    const spawn = spawnPoints?.[index % spawnPoints.length];
+    if (!spawn) return;
+
+    player.x = spawn.x;
+    player.y = spawn.y;
+    player.rotation = spawn.rotation ?? player.rotation;
+    player.turretRotation = player.rotation;
+    player.velocityX = 0;
+    player.velocityY = 0;
+  }
+
+  private resetPlayersForMatchStart(): void {
+    let spawnIndex = 0;
+    this.inputIntents.clear();
+    this.fireIntents.clear();
+    this.abilityIntents.clear();
+
+    for (const player of this.state.players.values()) {
+      if (!player.isConnected || player.isSpectator) continue;
+
+      applyTankConfig(player, player.archetypeId);
+      this.assignSpawnPosition(player, spawnIndex);
+      player.shield = 0;
+      player.ammo = 0;
+      player.abilityCharge = 0;
+      player.fireCooldownMs = 0;
+      player.abilityCooldownMs = 0;
+      player.placement = 0;
+      player.respawnAt = 0;
+      player.survivalTimeMs = 0;
+      player.isAlive = true;
+      player.isReady = false;
+      spawnIndex += 1;
+    }
+  }
+
+  private applyAuthoritativeMovement(deltaTime: number, now: number): void {
+    const arena = this.arena;
+    if (!arena) return;
+    const deltaSeconds = clamp(deltaTime, 0, MAX_SIMULATION_DELTA_MS) / 1_000;
+    if (deltaSeconds <= 0) return;
+
+    for (const [sessionId, player] of this.state.players.entries()) {
+      if (!this.canAcceptPlayerIntent(player)) {
+        player.velocityX = 0;
+        player.velocityY = 0;
+        continue;
+      }
+
+      const intent = this.inputIntents.get(sessionId);
+      if (!intent) {
+        player.velocityX = 0;
+        player.velocityY = 0;
+        continue;
+      }
+      if (now - intent.receivedAt > INPUT_INTENT_TTL_MS) {
+        this.inputIntents.delete(sessionId);
+        player.velocityX = 0;
+        player.velocityY = 0;
+        continue;
+      }
+
+      this.applyPlayerMovement(arena, player, intent, deltaSeconds);
+    }
+  }
+
+  private applyPlayerMovement(
+    arena: ArenaConfig,
+    player: PlayerSchema,
+    intent: StoredInputIntent,
+    deltaSeconds: number
+  ): void {
+    const moveLength = Math.hypot(intent.moveX, intent.moveY);
+    const moveX = moveLength > 1 ? intent.moveX / moveLength : intent.moveX;
+    const moveY = moveLength > 1 ? intent.moveY / moveLength : intent.moveY;
+    const tankConfig = TANK_ARCHETYPE_CONFIG[player.archetypeId];
+    const speed = tankConfig.speed;
+    const desiredX = player.x + moveX * speed * deltaSeconds;
+    const desiredY = player.y + moveY * speed * deltaSeconds;
+    const next = this.resolveArenaMovement(
+      arena,
+      player.x,
+      player.y,
+      desiredX,
+      desiredY,
+      this.playerCollisionRadius()
+    );
+
+    player.velocityX = (next.x - player.x) / deltaSeconds;
+    player.velocityY = (next.y - player.y) / deltaSeconds;
+    player.x = next.x;
+    player.y = next.y;
+
+    if (moveLength > 0.001 && (player.velocityX !== 0 || player.velocityY !== 0)) {
+      player.rotation = Math.atan2(moveY, moveX);
+    }
+    if (Number.isFinite(intent.aimX) && Number.isFinite(intent.aimY)) {
+      player.turretRotation = angleTo(player.x, player.y, intent.aimX, intent.aimY);
+    }
+  }
+
+  private resolveArenaMovement(
+    arena: ArenaConfig,
+    currentX: number,
+    currentY: number,
+    desiredX: number,
+    desiredY: number,
+    radius: number
+  ): ArenaPoint {
+    const desired = clampArenaBounds(arena, desiredX, desiredY, radius);
+    if (!isWallCollision(arena, desired.x, desired.y, radius)) {
+      return desired;
+    }
+
+    const slideX = clampArenaBounds(arena, desiredX, currentY, radius);
+    if (!isWallCollision(arena, slideX.x, slideX.y, radius)) {
+      return slideX;
+    }
+
+    const slideY = clampArenaBounds(arena, currentX, desiredY, radius);
+    if (!isWallCollision(arena, slideY.x, slideY.y, radius)) {
+      return slideY;
+    }
+
+    const current = clampArenaBounds(arena, currentX, currentY, radius);
+    if (!isWallCollision(arena, current.x, current.y, radius)) {
+      return current;
+    }
+
+    return clampToArena(arena, currentX, currentY, radius);
+  }
+
+  private playerCollisionRadius(): number {
+    return positiveNumberOr(this.arena?.spawnPoints[0]?.radius, TANK_COLLISION_RADIUS);
+  }
+
+  private zonePhaseStartAt(
+    matchState: MatchState,
+    runningStartedAt: number,
+    fallbackOffsetMs: number
+  ): number {
+    const phase = this.getZonePhase(matchState);
+    const offset = phase?.startsAt;
+    return runningStartedAt + (isFiniteNumber(offset) && offset >= 0 ? offset : fallbackOffsetMs);
+  }
+
+  private zoneFinishAt(runningStartedAt: number, fallbackOffsetMs: number): number {
+    const finalPhase = this.getZonePhase("final_zone");
+    const offset = finalPhase?.closesAt;
+    return runningStartedAt + (isFiniteNumber(offset) && offset > 0 ? offset : fallbackOffsetMs);
+  }
+
+  private applyZonePhase(matchState: MatchState, at: number): void {
+    const phase = this.getZonePhase(matchState) ?? this.getZonePhase("running");
+    const bounds = this.arena ? getArenaBounds(this.arena) : undefined;
+    const centerX = bounds ? (bounds.minX + bounds.maxX) / 2 : 0;
+    const centerY = bounds ? (bounds.minY + bounds.maxY) / 2 : 0;
+    const arenaRadius = bounds
+      ? Math.min(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) / 2
+      : DEFAULT_ARENA_SIZE / 2;
+    const runningStartedAt = this.runningStartedAt || at;
+    const absoluteFromRunning = (value: number | undefined, fallback: number): number =>
+      isFiniteNumber(value) && value >= 0 ? runningStartedAt + value : fallback;
+
+    this.state.zone.x = phase?.x ?? centerX;
+    this.state.zone.y = phase?.y ?? centerY;
+    this.state.zone.radius = positiveNumberOr(phase?.radius, arenaRadius);
+    this.state.zone.targetX = phase?.targetX ?? this.state.zone.x;
+    this.state.zone.targetY = phase?.targetY ?? this.state.zone.y;
+    this.state.zone.targetRadius = positiveNumberOr(phase?.targetRadius, this.state.zone.radius);
+    this.state.zone.damagePerSecond = phase?.damagePerSecond ?? 0;
+    this.state.zonePhase.index = phase?.index ?? 0;
+    this.state.zonePhase.startsAt =
+      matchState === "waiting" || matchState === "countdown"
+        ? at
+        : absoluteFromRunning(phase?.startsAt, at);
+    this.state.zonePhase.warningAt =
+      matchState === "waiting" || matchState === "countdown"
+        ? 0
+        : absoluteFromRunning(phase?.warningAt, this.state.zonePhase.startsAt);
+    this.state.zonePhase.closesAt =
+      matchState === "waiting" || matchState === "countdown"
+        ? 0
+        : absoluteFromRunning(phase?.closesAt, this.state.zonePhase.startsAt);
+  }
+
+  private getZonePhase(matchState: MatchState): ArenaConfig["zonePhases"][number] | undefined {
+    const phases = this.arena?.zonePhases;
+    if (!phases?.length) return undefined;
+    const matched = phases.find((phase) => phase.matchState === matchState);
+    if (matched) return matched;
+
+    const indexByState: Partial<Record<MatchState, number>> = {
+      waiting: 0,
+      countdown: 0,
+      running: 0,
+      danger: 1,
+      final_zone: 2,
+      finished: phases.length - 1
+    };
+    const index = indexByState[matchState] ?? 0;
+    return phases[Math.min(index, phases.length - 1)];
   }
 
   private ensureAutoStartTimer(): void {

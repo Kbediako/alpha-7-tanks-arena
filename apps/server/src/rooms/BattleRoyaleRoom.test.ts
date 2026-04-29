@@ -14,10 +14,43 @@ type RoomInternals = {
   handleRematchMessage(client: Client, payload: unknown): void;
   handleStartMessage(client: Client, payload: unknown): void;
   advanceTimedLifecycle(now: number): void;
+  onSimulationTick(deltaTime: number): void;
   fireIntents: Map<string, unknown>;
   inputIntents: Map<string, unknown>;
   rematchVotes: Map<string, unknown>;
 };
+
+interface TestArenaPoint {
+  x: number;
+  y: number;
+  rotation?: number;
+  radius?: number;
+}
+
+interface TestArenaWall {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface TestArenaConfig {
+  seed: string;
+  width?: number;
+  height?: number;
+  bounds: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  } | undefined;
+  spawnPoints: TestArenaPoint[];
+  pickupPoints?: TestArenaPoint[];
+  pickupPlacements?: TestArenaPoint[];
+  zonePhases: unknown[];
+  walls?: TestArenaWall[];
+  collisionRects?: TestArenaWall[];
+}
 
 interface TestClient {
   client: Client;
@@ -50,6 +83,7 @@ const testConfig: ServerConfig = {
 };
 
 const rooms: BattleRoyaleRoom[] = [];
+const TEST_TANK_RADIUS = 28;
 
 const makeClient = (sessionId: string): TestClient => {
   const send = vi.fn();
@@ -111,6 +145,41 @@ const makeRoom = async (
   };
 };
 
+const readArenaConfig = (room: BattleRoyaleRoom): TestArenaConfig => {
+  const state = room.state as typeof room.state & {
+    arenaConfigJson?: string;
+    mapConfigJson?: string;
+  };
+  const arenaConfigJson = state.arenaConfigJson || state.mapConfigJson;
+  expect(arenaConfigJson).toEqual(expect.any(String));
+  return JSON.parse(arenaConfigJson ?? "{}") as TestArenaConfig;
+};
+
+const arenaBounds = (arena: TestArenaConfig): NonNullable<TestArenaConfig["bounds"]> => {
+  if (arena.bounds) return arena.bounds;
+  expect(arena.width).toEqual(expect.any(Number));
+  expect(arena.height).toEqual(expect.any(Number));
+  return {
+    minX: 0,
+    minY: 0,
+    maxX: arena.width ?? 0,
+    maxY: arena.height ?? 0
+  };
+};
+
+const pickupPoints = (arena: TestArenaConfig): TestArenaPoint[] =>
+  arena.pickupPlacements ?? arena.pickupPoints ?? [];
+
+const firstInteriorWall = (arena: TestArenaConfig): TestArenaWall | undefined =>
+  arena.collisionRects?.find((wall) => wall.x > TEST_TANK_RADIUS + 8 && wall.y > TEST_TANK_RADIUS + 8) ??
+  arena.walls?.[0];
+
+const wallLeft = (arena: TestArenaConfig, wall: TestArenaWall): number =>
+  arena.collisionRects?.includes(wall) ? wall.x : wall.x - wall.width / 2;
+
+const wallCenterY = (arena: TestArenaConfig, wall: TestArenaWall): number =>
+  arena.collisionRects?.includes(wall) ? wall.y + wall.height / 2 : wall.y;
+
 afterEach(() => {
   for (const room of rooms.splice(0)) {
     room.onDispose();
@@ -144,10 +213,35 @@ describe("BattleRoyaleRoom phase 3 lifecycle", () => {
     });
   });
 
+  it("syncs deterministic arena config onto room state for clients", async () => {
+    const { room } = await makeRoom({
+      seed: "arena-seed"
+    });
+
+    const arena = readArenaConfig(room);
+    const bounds = arenaBounds(arena);
+    expect(arena.seed).toBe("arena-seed");
+    expect(bounds).toMatchObject({
+      minX: expect.any(Number),
+      minY: expect.any(Number),
+      maxX: expect.any(Number),
+      maxY: expect.any(Number)
+    });
+    expect(arena.spawnPoints.length).toBeGreaterThanOrEqual(testConfig.demoMaxPlayers);
+    expect(pickupPoints(arena).length).toBeGreaterThan(0);
+    expect(arena.zonePhases.length).toBeGreaterThanOrEqual(3);
+    expect(room.state.zone.radius).toBeGreaterThan(0);
+  });
+
   it("populates players from join options with sanitized names, host selection, and tank defaults", async () => {
     const { room, internals, metadata } = await makeRoom();
     const host = makeClient("host1");
     const guest = makeClient("guest1");
+    const arena = readArenaConfig(room);
+    const hostSpawn = arena.spawnPoints[0];
+    const guestSpawn = arena.spawnPoints[1];
+    expect(hostSpawn).toBeDefined();
+    expect(guestSpawn).toBeDefined();
 
     room.onJoin(host.client, {
       playerName: " <Rook>\nPilot ",
@@ -171,12 +265,16 @@ describe("BattleRoyaleRoom phase 3 lifecycle", () => {
       health: 140,
       maxArmor: 60,
       armor: 60,
+      x: hostSpawn?.x,
+      y: hostSpawn?.y,
       isHost: true,
       isReady: false
     });
     expect(guestPlayer).toMatchObject({
       name: "Player GUES",
       archetypeId: "atlas",
+      x: guestSpawn?.x,
+      y: guestSpawn?.y,
       isHost: false
     });
 
@@ -338,6 +436,159 @@ describe("BattleRoyaleRoom phase 3 lifecycle", () => {
     internals.advanceTimedLifecycle(runningAt + 210_000);
     expect(room.state.matchState).toBe("finished");
     expect(room.state.zonePhase.matchState).toBe("finished");
+  });
+
+  it("resets alive players to deterministic spawns and clean match state on start", async () => {
+    const { room, internals } = await makeRoom();
+    const host = makeClient("host1");
+    const guest = makeClient("guest1");
+    const arena = readArenaConfig(room);
+    const hostSpawn = arena.spawnPoints[0];
+    const guestSpawn = arena.spawnPoints[1];
+
+    room.onJoin(host.client, { playerName: "Host", archetypeId: "nova" });
+    room.onJoin(guest.client, { playerName: "Guest", archetypeId: "quill" });
+    internals.handleStartMessage(host.client, {});
+
+    const hostPlayer = room.state.players.get(host.client.sessionId);
+    const guestPlayer = room.state.players.get(guest.client.sessionId);
+    expect(hostPlayer).toBeDefined();
+    expect(guestPlayer).toBeDefined();
+    if (hostPlayer) {
+      hostPlayer.x = 999;
+      hostPlayer.y = -999;
+      hostPlayer.health = 1;
+      hostPlayer.armor = 0;
+      hostPlayer.velocityX = 20;
+      hostPlayer.velocityY = -20;
+      hostPlayer.isReady = true;
+    }
+    internals.inputIntents.set(host.client.sessionId, {
+      sequence: 99
+    });
+
+    internals.advanceTimedLifecycle(room.state.match.countdownEndsAt);
+
+    expect(room.state.matchState).toBe("running");
+    expect(hostPlayer).toMatchObject({
+      x: hostSpawn?.x,
+      y: hostSpawn?.y,
+      health: 110,
+      armor: 35,
+      velocityX: 0,
+      velocityY: 0,
+      isAlive: true,
+      isReady: false
+    });
+    expect(guestPlayer).toMatchObject({
+      x: guestSpawn?.x,
+      y: guestSpawn?.y,
+      health: 90,
+      armor: 20
+    });
+    expect(internals.inputIntents.size).toBe(0);
+    expect(room.state.match.alivePlayers).toBe(2);
+  });
+
+  it("applies server-authoritative movement with arena bounds and wall collision", async () => {
+    const { room, internals } = await makeRoom({
+      seed: "movement-seed"
+    });
+    const host = makeClient("host1");
+    const guest = makeClient("guest1");
+
+    room.onJoin(host.client, { playerName: "Host", archetypeId: "nova" });
+    room.onJoin(guest.client, { playerName: "Guest", archetypeId: "atlas" });
+    internals.handleStartMessage(host.client, {});
+    internals.advanceTimedLifecycle(room.state.match.countdownEndsAt);
+
+    const arena = readArenaConfig(room);
+    const bounds = arenaBounds(arena);
+    const collisionRadius = arena.spawnPoints[0]?.radius ?? TEST_TANK_RADIUS;
+    const player = room.state.players.get(host.client.sessionId);
+    expect(player).toBeDefined();
+    if (!player) return;
+
+    player.x = bounds.maxX - collisionRadius - 1;
+    player.y = (bounds.minY + bounds.maxY) / 2;
+    internals.handleInputMessage(host.client, {
+      sequence: 1,
+      tick: 1,
+      moveX: 1,
+      moveY: 0,
+      aimX: bounds.minX,
+      aimY: player.y + 100,
+      fire: false,
+      ability: false
+    });
+    internals.onSimulationTick(1_000);
+
+    expect(player.x).toBeLessThanOrEqual(bounds.maxX - collisionRadius);
+    expect(player.y).toBe((bounds.minY + bounds.maxY) / 2);
+    expect(player.turretRotation).toBeGreaterThan(1.4);
+
+    const wall = firstInteriorWall(arena);
+    expect(wall).toBeDefined();
+    if (!wall) return;
+
+    const left = wallLeft(arena, wall);
+    const centerY = wallCenterY(arena, wall);
+    player.x = left - collisionRadius - 2;
+    player.y = centerY;
+    player.velocityX = 0;
+    player.velocityY = 0;
+    internals.handleInputMessage(host.client, {
+      sequence: 2,
+      tick: 2,
+      moveX: 1,
+      moveY: 0,
+      aimX: left,
+      aimY: centerY,
+      fire: false,
+      ability: false
+    });
+    internals.onSimulationTick(1_000);
+
+    expect(player.x).toBeCloseTo(left - collisionRadius - 2);
+    expect(player.velocityX).toBe(0);
+  });
+
+  it("expires stale movement intents instead of replaying old input forever", async () => {
+    const { room, internals } = await makeRoom({
+      seed: "stale-intent-seed"
+    });
+    const host = makeClient("host1");
+    const guest = makeClient("guest1");
+
+    room.onJoin(host.client, { playerName: "Host", archetypeId: "nova" });
+    room.onJoin(guest.client, { playerName: "Guest", archetypeId: "atlas" });
+    internals.handleStartMessage(host.client, {});
+    internals.advanceTimedLifecycle(room.state.match.countdownEndsAt);
+
+    const player = room.state.players.get(host.client.sessionId);
+    expect(player).toBeDefined();
+    if (!player) return;
+    const startX = player.x;
+    const startY = player.y;
+
+    internals.inputIntents.set(host.client.sessionId, {
+      sequence: 10,
+      tick: room.state.match.tick,
+      moveX: 1,
+      moveY: 0,
+      aimX: startX + 100,
+      aimY: startY,
+      fire: false,
+      ability: false,
+      receivedAt: Date.now() - 1_000
+    });
+    internals.onSimulationTick(16);
+
+    expect(player.x).toBe(startX);
+    expect(player.y).toBe(startY);
+    expect(player.velocityX).toBe(0);
+    expect(player.velocityY).toBe(0);
+    expect(internals.inputIntents.has(host.client.sessionId)).toBe(false);
   });
 
   it("keeps post-join payloads defensive and stores authoritative intent/rematch skeletons", async () => {

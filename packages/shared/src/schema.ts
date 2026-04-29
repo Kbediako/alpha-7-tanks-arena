@@ -107,6 +107,8 @@ export class Alpha7StateSchema extends Schema {
   @type("string") matchState: MatchState = "waiting";
   @type("string") roomCode = "";
   @type("string") seed = "";
+  @type("string") arenaConfigJson = "";
+  @type("string") mapConfigJson = "";
   @type(MatchCoreSchema) match = new MatchCoreSchema();
   @type(ZoneCoreSchema) zone = new ZoneCoreSchema();
   @type(ZonePhaseSchema) zonePhase = new ZonePhaseSchema();

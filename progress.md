@@ -65,3 +65,22 @@ Original prompt: Build Alpha-7 Tanks Arena from the requirements in Docs/prompt.
   - `pnpm --filter @alpha7/server typecheck`
   - `pnpm --filter @alpha7/server test` (9 tests)
   - `pnpm check`
+
+## Playable arena slice checkpoint
+- Added deterministic shared arena generation with seeded RNG, maze/floor/wall/collision data, connected path validation, open pockets, choke detection, spawn selection, pickup placement, safe-zone phase planning, and shared tests for determinism, connectivity, spawn fairness, pickup validity, zone planning, and basic combat/pickup constants.
+- Synced generated arena config through the Colyseus room state for clients, assigns deterministic spawn positions on join/start, resets match state on start, applies authoritative movement with arena bounds and wall collision, updates zone phase metadata, and expires stale movement intents so stalled clients cannot keep driving.
+- Replaced the static client preview with a Colyseus-backed playable shell: name/tank select, quick play, public/private lobby creation, case-preserving room-code joins, lobby ready/start flow, fullscreen three.js arena renderer, server-map parsing, local interpolation/prediction, tank meshes, world/minimap zone rendering, desktop keyboard/mouse input, mobile joystick/aim/fire/ability controls, and WebGL fallback messaging.
+- Applied the Alpha-7 HUD direction from DESIGN.md and the design-kit references: warm concrete/slate palette, translucent panels, mono data labels, orange only for primary/action/threat states, safe-area aware mobile controls, and pointer-passive HUD panels outside interactive controls.
+- Standalone review found and parent fixed room-code case/Enter join regressions, renderer callback churn, narrow-viewport camera framing, inactive-match local movement drift, alive-count clamping, and stale server movement intents.
+- Collab-deliberation recommended committing this validated playable slice now and carrying the Vite chunk-size warning as a performance follow-up in the next gameplay bundle.
+- Verification:
+  - `pnpm --filter @alpha7/client typecheck`
+  - `pnpm --filter @alpha7/client build`
+  - `pnpm --filter @alpha7/server typecheck`
+  - `pnpm --filter @alpha7/server test` (13 tests)
+  - `pnpm check`
+  - `codex review --uncommitted` and focused stale-intent review; latest focused review found no actionable regressions.
+  - Two-client Colyseus smoke verified arena sync, match start, and server-owned movement.
+  - Desktop Playwright smoke captured a rendered server-sourced arena; mobile headless smoke verified lobby/HUD/control layout with WebGL fallback.
+- Known follow-up:
+  - Vite reports the client bundle chunk exceeds 500 kB after minification because React/three are bundled together; defer code splitting/manual chunks to the next performance pass.
