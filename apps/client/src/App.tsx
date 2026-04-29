@@ -608,49 +608,70 @@ function MiniMap({
   );
 }
 
-function TankStatusCard({ player }: { player: ClientPlayer | null }) {
+function TankStatusCard({
+  collapsed,
+  onToggle,
+  player
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+  player: ClientPlayer | null;
+}) {
   if (!player) return null;
   const tank = TANK_ARCHETYPE_CONFIG[player.archetypeId];
   const healthRatio = clamp(player.health / Math.max(1, player.maxHealth), 0, 1);
   const armorRatio = clamp(player.armor / Math.max(1, player.maxArmor), 0, 1);
 
   return (
-    <section className="hud-panel tank-status-card" aria-label="Tank status">
+    <section className={collapsed ? "hud-panel tank-status-card interactive-panel is-collapsed" : "hud-panel tank-status-card interactive-panel"} aria-label="Tank status">
       <div className="tank-status-head">
         <span>
           <strong>{tank.name}</strong>
           <em>{tank.role}</em>
         </span>
         <b>{player.name}</b>
+        <button aria-label={collapsed ? "Expand tank status" : "Collapse tank status"} className="tank-status-toggle" onClick={onToggle} type="button">
+          {collapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+        </button>
       </div>
-      <div className="status-meter">
-        <span>Health</span>
-        <b>{Math.round(player.health)} / {player.maxHealth}</b>
-        <i style={{ width: `${healthRatio * 100}%` }} />
-      </div>
-      <div className="status-meter armor-meter">
-        <span>Armor</span>
-        <b>{Math.round(player.armor)} / {player.maxArmor}</b>
-        <i style={{ width: `${armorRatio * 100}%` }} />
-      </div>
-      <div className="tank-meta-grid">
-        <span>
-          <Gauge size={15} />
-          {tank.speed}
-        </span>
-        <span>
-          <Crosshair size={15} />
-          {WEAPON_CONFIG[player.weaponType].name}
-        </span>
-        <span>
-          <Target size={15} />
-          {player.kills} Kills
-        </span>
-        <span>
-          <Shield size={15} />
-          {Math.round(player.damageDealt)} Dmg
-        </span>
-      </div>
+      {collapsed ? (
+        <div className="tank-status-summary">
+          <span>HP {Math.round(player.health)}</span>
+          <span>AR {Math.round(player.armor)}</span>
+          <span>{WEAPON_CONFIG[player.weaponType].name}</span>
+        </div>
+      ) : (
+        <>
+          <div className="status-meter">
+            <span>Health</span>
+            <b>{Math.round(player.health)} / {player.maxHealth}</b>
+            <i style={{ width: `${healthRatio * 100}%` }} />
+          </div>
+          <div className="status-meter armor-meter">
+            <span>Armor</span>
+            <b>{Math.round(player.armor)} / {player.maxArmor}</b>
+            <i style={{ width: `${armorRatio * 100}%` }} />
+          </div>
+          <div className="tank-meta-grid">
+            <span>
+              <Gauge size={15} />
+              {tank.speed}
+            </span>
+            <span>
+              <Crosshair size={15} />
+              {WEAPON_CONFIG[player.weaponType].name}
+            </span>
+            <span>
+              <Target size={15} />
+              {player.kills} Kills
+            </span>
+            <span>
+              <Shield size={15} />
+              {Math.round(player.damageDealt)} Dmg
+            </span>
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -719,22 +740,42 @@ function AbilityDock({
 }
 
 function CompactHudBar({
+  collapsed,
   outsideSafeZone,
   player,
   scoreboardExpanded,
   snapshot,
+  onToggleCollapse,
   onToggleScoreboard
 }: {
+  collapsed: boolean;
   outsideSafeZone: boolean;
   player: ClientPlayer | null;
   scoreboardExpanded: boolean;
   snapshot: ClientSnapshot;
+  onToggleCollapse: () => void;
   onToggleScoreboard: () => void;
 }) {
   if (!player) return null;
   const ammo = player.ammo > 0 ? player.ammo : WEAPON_CONFIG[player.weaponType].category === "rapid" ? 60 : 24;
+  if (collapsed) {
+    return (
+      <section className="compact-hud hud-panel interactive-panel is-collapsed" aria-label="Compact mobile HUD">
+        <button className="compact-summary-chip" onClick={onToggleCollapse} type="button">
+          <span>{TANK_ARCHETYPE_CONFIG[player.archetypeId].name}</span>
+          <strong>{Math.round(player.health)} HP</strong>
+          <ChevronDown size={15} />
+        </button>
+      </section>
+    );
+  }
+
   return (
     <section className="compact-hud hud-panel interactive-panel" aria-label="Compact mobile HUD">
+      <button className="compact-chip is-collapse" onClick={onToggleCollapse} type="button">
+        <small>Tank</small>
+        <strong><ChevronUp size={16} /></strong>
+      </button>
       <div className="compact-chip is-health">
         <small>HP</small>
         <strong>{Math.round(player.health)}</strong>
@@ -1345,6 +1386,9 @@ export function App() {
   const [abilitySignal, setAbilitySignal] = useState(0);
   const [joystickKnob, setJoystickKnob] = useState({ x: 0, y: 0 });
   const [scoreboardExpanded, setScoreboardExpanded] = useState(false);
+  const [tankInfoCollapsed, setTankInfoCollapsed] = useState(() =>
+    window.matchMedia("(pointer: coarse) and (orientation: landscape), (max-height: 760px) and (max-width: 1100px)").matches
+  );
   const [spectatorOverlayDismissed, setSpectatorOverlayDismissed] = useState(false);
   const [queuedJoinMode, setQueuedJoinMode] = useState<JoinMode | null>(null);
   const [assetManifest, setAssetManifest] = useState<Alpha7AssetManifest | null>(null);
@@ -2018,7 +2062,11 @@ export function App() {
       <div className="hud-layer" aria-label="Game HUD">
         <MatchHeader now={now} outsideSafeZone={outsideSafeZone} snapshot={displaySnapshot} />
         <MiniMap localPose={localPoseRef.current} outsideSafeZone={outsideSafeZone} snapshot={displaySnapshot} />
-        <TankStatusCard player={selfPlayer} />
+        <TankStatusCard
+          collapsed={tankInfoCollapsed}
+          onToggle={() => setTankInfoCollapsed((value) => !value)}
+          player={selfPlayer}
+        />
         <WeaponStrip player={selfPlayer} />
         <AbilityDock assetManifest={assetManifest} onAbility={triggerAbility} player={selfPlayer} />
         {snapshot ? <ScoreboardPanel expanded={scoreboardExpanded} snapshot={snapshot} /> : null}
@@ -2029,6 +2077,8 @@ export function App() {
             player={selfPlayer}
             scoreboardExpanded={scoreboardExpanded}
             snapshot={snapshot}
+            collapsed={tankInfoCollapsed}
+            onToggleCollapse={() => setTankInfoCollapsed((value) => !value)}
             onToggleScoreboard={() => setScoreboardExpanded((value) => !value)}
           />
         ) : null}

@@ -50,6 +50,7 @@ declare global {
 interface TankParts {
   group: THREE.Group;
   turret: THREE.Group;
+  statusRail: THREE.Group;
   healthFill: THREE.Mesh;
   armorFill: THREE.Mesh;
   target: LocalPose;
@@ -350,23 +351,23 @@ const createTankMesh = (player: ClientPlayer): TankParts => {
   group.add(turret);
 
   const statusRail = new THREE.Group();
-  statusRail.position.set(0, 58, 0);
+  statusRail.position.set(0, 4, 54);
   const statusBg = new THREE.Mesh(
-    new THREE.BoxGeometry(76, 5, 5),
-    new THREE.MeshBasicMaterial({ color: COLORS.ink, transparent: true, opacity: 0.55 })
+    new THREE.BoxGeometry(80, 2, 15),
+    new THREE.MeshBasicMaterial({ color: COLORS.ink, transparent: true, opacity: 0.46 })
   );
   statusRail.add(statusBg);
   const healthFill = new THREE.Mesh(
-    new THREE.BoxGeometry(72, 6, 6),
+    new THREE.BoxGeometry(72, 3, 5),
     new THREE.MeshBasicMaterial({ color: isSelf ? COLORS.white : COLORS.accent })
   );
-  healthFill.position.x = 0;
+  healthFill.position.set(0, 1.4, -3.2);
   statusRail.add(healthFill);
   const armorFill = new THREE.Mesh(
-    new THREE.BoxGeometry(72, 3, 3),
+    new THREE.BoxGeometry(72, 2, 3),
     new THREE.MeshBasicMaterial({ color: COLORS.blue, transparent: true, opacity: 0.88 })
   );
-  armorFill.position.set(0, -7, 0);
+  armorFill.position.set(0, 1.4, 4.2);
   statusRail.add(armorFill);
   group.add(statusRail);
 
@@ -381,6 +382,7 @@ const createTankMesh = (player: ClientPlayer): TankParts => {
   return {
     group,
     turret,
+    statusRail,
     healthFill,
     armorFill,
     target: { ...pose },
@@ -576,6 +578,7 @@ const renderTanks = (runtime: Runtime, dt: number): void => {
     parts.group.position.copy(worldToThree(parts.current.x, parts.current.y));
     parts.group.rotation.y = -parts.current.rotation;
     parts.turret.rotation.y = -(parts.current.turretRotation - parts.current.rotation);
+    parts.statusRail.rotation.y = parts.current.rotation;
   }
 };
 

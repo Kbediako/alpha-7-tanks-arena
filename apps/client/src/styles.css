@@ -820,9 +820,23 @@ button:disabled {
 
 .tank-status-head {
   display: flex;
+  align-items: start;
   justify-content: space-between;
   gap: 14px;
   margin-bottom: 14px;
+}
+
+.tank-status-toggle {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(183, 176, 166, 0.5);
+  border-radius: 8px;
+  background: rgba(247, 243, 237, 0.44);
+  color: var(--color-ink);
+  cursor: pointer;
 }
 
 .tank-status-head strong {
@@ -839,6 +853,22 @@ button:disabled {
   font-size: 10px;
   font-style: normal;
   font-weight: 500;
+}
+
+.tank-status-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--color-ink-muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.tank-status-summary span {
+  border-radius: 8px;
+  background: rgba(247, 243, 237, 0.42);
+  padding: 7px 8px;
 }
 
 .status-meter {
@@ -892,6 +922,15 @@ button:disabled {
   background: rgba(247, 243, 237, 0.48);
   padding: 0 8px;
   font-size: 10px;
+}
+
+.tank-status-card.is-collapsed {
+  width: 246px;
+  padding: 12px;
+}
+
+.tank-status-card.is-collapsed .tank-status-head {
+  margin-bottom: 8px;
 }
 
 .weapon-strip {
@@ -1850,6 +1889,15 @@ button:disabled {
     padding: 8px;
   }
 
+  .compact-hud.is-collapsed {
+    right: auto;
+    width: auto;
+    max-width: min(210px, calc(100vw - 24px));
+    grid-template-columns: 1fr;
+    gap: 0;
+    padding: 6px;
+  }
+
   .compact-chip {
     min-height: 48px;
     border-radius: 12px;
@@ -1859,6 +1907,32 @@ button:disabled {
     gap: 1px;
     background: rgba(247, 243, 237, 0.42);
     font-size: 9px;
+  }
+
+  .compact-summary-chip {
+    display: grid;
+    grid-template-columns: auto auto auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    border: 0;
+    border-radius: 10px;
+    background: rgba(247, 243, 237, 0.5);
+    color: var(--color-ink);
+    padding: 0 10px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    text-transform: uppercase;
+  }
+
+  .compact-summary-chip span {
+    color: var(--color-ink-muted);
+    font-size: 9px;
+  }
+
+  .compact-summary-chip strong {
+    font-family: Rajdhani, sans-serif;
+    font-size: 16px;
+    letter-spacing: 0.04em;
   }
 
   .compact-chip strong {
@@ -2129,6 +2203,15 @@ button:disabled {
     grid-template-columns: repeat(auto-fit, minmax(56px, 1fr));
     gap: 8px;
     padding: 8px;
+  }
+
+  .game-shell.is-active-match .compact-hud.is-collapsed {
+    right: auto;
+    width: auto;
+    max-width: min(210px, calc(100vw - 24px));
+    grid-template-columns: 1fr;
+    gap: 0;
+    padding: 6px;
   }
 
   .game-shell.is-active-match .compact-chip {
