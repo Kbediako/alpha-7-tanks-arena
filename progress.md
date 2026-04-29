@@ -36,3 +36,17 @@ Original prompt: Build Alpha-7 Tanks Arena from the requirements in Docs/prompt.
   - Private-room smoke verified `create(..., { privateRoom: true })` stays separate from quick play.
 - Post-fix `codex review --uncommitted` found no discrete correctness, security, or maintainability issues; its independent `pnpm check` also passed.
 - Post-Phase-1 collab-deliberation recommended committing Phase 1 now, then keeping the next protocol contract work single-owned across shared/server until the first playable state contract is green.
+
+## Phase 2 shared contract checkpoint
+- Added shared gameplay constants/config for weapons, pickups, abilities, tank archetypes, defaults, and exact match state/room protocol values.
+- Added Colyseus schema classes for match core state, zone state, players, projectiles, pickups, and the Alpha-7 room state; schemas stay exported from `@alpha7/shared/schema`.
+- Added typed client/server room message payloads for join, ready, input, fire, ability, rematch, system, and error channels from the shared root package.
+- Added focused shared tests for protocol values, gameplay config sanity, schema defaults, synchronized match-state helper behavior, and message payload typing.
+- Kept the root barrel free of schema runtime exports so client bundles can import lightweight constants/messages without pulling schema classes unless needed.
+- Post-implementation elegance pass removed a no-op seed setter and duplicate state schema alias before commit.
+- Verification:
+  - `pnpm --filter @alpha7/shared typecheck`
+  - `pnpm --filter @alpha7/shared test` (7 tests)
+  - `pnpm check`
+  - `codex review --uncommitted` found no actionable correctness issues before the elegance trim.
+  - Post-Phase-2 collab-deliberation recommended committing the shared contract and implementing Phase 3 with `BattleRoyaleRoom` as the single server owner for admission, ready/start, transitions, locking, and late-join policy.
