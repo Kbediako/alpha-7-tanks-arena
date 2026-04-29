@@ -50,3 +50,18 @@ Original prompt: Build Alpha-7 Tanks Arena from the requirements in Docs/prompt.
   - `pnpm check`
   - `codex review --uncommitted` found no actionable correctness issues before the elegance trim.
   - Post-Phase-2 collab-deliberation recommended committing the shared contract and implementing Phase 3 with `BattleRoyaleRoom` as the single server owner for admission, ready/start, transitions, locking, and late-join policy.
+
+## Phase 3 server lifecycle checkpoint
+- Implemented `BattleRoyaleRoom` lifecycle for `battle_royale`: waiting lobby admission, sanitized join/tank updates, host assignment, ready flow, host start, countdown, room lock/unlock, timed `running -> danger -> final_zone -> finished` transitions, metadata updates, and rematch-vote skeleton.
+- Added defensive server-side parsing for join, ready, start, input, fire, ability, and rematch messages. Active input/fire/ability messages are stored as intents only and are rejected unless the room is active and the player is alive, connected, and not spectating.
+- Added `CLIENT_MESSAGE_TYPES.START` and `StartMessagePayload` to the shared protocol so host start is not server-local.
+- Private rooms still use generated room codes and `setPrivate`; public rooms keep matchmaking metadata for later lobby/client flows.
+- Rematch votes are gated to `finished` and cleared for active-match disconnects so stale votes cannot leak into the future rematch implementation.
+- Added server room lifecycle tests covering metadata/private rooms, sanitized players, host reassignment, auto-locked final seats, ready countdown, lock/unlock late-join rejection, host-only start, timed state transitions, defensive intents, server-owned weapon validation, rematch gating, and inactive-player intent rejection.
+- Standalone review found and parent fixed final-seat auto-lock admission and client-selected weapon override risks; elegance review then removed dead lifecycle state, a fake countdown trigger parameter, and duplicated tank config application.
+- Verification:
+  - `pnpm --filter @alpha7/shared typecheck`
+  - `pnpm --filter @alpha7/shared test` (7 tests)
+  - `pnpm --filter @alpha7/server typecheck`
+  - `pnpm --filter @alpha7/server test` (9 tests)
+  - `pnpm check`

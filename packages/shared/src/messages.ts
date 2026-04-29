@@ -3,6 +3,7 @@ import type { AbilityType, MatchState, TankArchetypeId, WeaponType } from "./con
 export const CLIENT_MESSAGE_TYPES = {
   JOIN: "join",
   READY: "ready",
+  START: "start",
   INPUT: "input",
   FIRE: "fire",
   ABILITY: "ability",
@@ -19,6 +20,10 @@ export interface JoinMessagePayload {
 
 export interface ReadyMessagePayload {
   ready: boolean;
+}
+
+export interface StartMessagePayload {
+  start?: true;
 }
 
 export interface InputMessagePayload {
@@ -55,6 +60,7 @@ export interface RematchMessagePayload {
 export interface ClientToServerPayloadMap {
   join: JoinMessagePayload;
   ready: ReadyMessagePayload;
+  start: StartMessagePayload;
   input: InputMessagePayload;
   fire: FireMessagePayload;
   ability: AbilityMessagePayload;

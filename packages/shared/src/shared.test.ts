@@ -157,6 +157,9 @@ describe("phase 2 messages", () => {
       fire: true,
       ability: false
     };
+    const start: ClientToServerMessage<typeof CLIENT_MESSAGE_TYPES.START> = {
+      start: true
+    };
     const system: ServerToClientMessage<typeof SERVER_MESSAGE_TYPES.SYSTEM> = {
       code: "match_state",
       message: "Match running",
@@ -177,6 +180,8 @@ describe("phase 2 messages", () => {
     };
 
     expect(CLIENT_MESSAGE_TYPES.JOIN).toBe("join");
+    expect(CLIENT_MESSAGE_TYPES.START).toBe("start");
+    expect(start.start).toBe(true);
     expect(input.sequence).toBe(1);
     expect(system.matchState).toBe("running");
     expect(joined.roomCode).toBe("ABC123");
