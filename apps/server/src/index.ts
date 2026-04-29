@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { Encoder } from "@colyseus/schema";
 import cors from "cors";
 import express from "express";
 import { matchMaker, Server } from "colyseus";
@@ -6,6 +7,8 @@ import { WebSocketTransport } from "@colyseus/ws-transport";
 import { BATTLE_ROYALE_ROOM, type HealthResponse } from "@alpha7/shared";
 import { serverConfig } from "./config.js";
 import { BattleRoyaleRoom } from "./rooms/BattleRoyaleRoom.js";
+
+Encoder.BUFFER_SIZE = 96 * 1024;
 
 const app = express();
 

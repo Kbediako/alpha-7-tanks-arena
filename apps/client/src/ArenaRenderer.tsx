@@ -1,13 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import { TANK_ARCHETYPE_CONFIG, type TankArchetypeId } from "@alpha7/shared";
+import {
+  ABILITY_CONFIG,
+  PICKUP_CONFIG,
+  TANK_ARCHETYPE_CONFIG,
+  WEAPON_CONFIG,
+  type TankArchetypeId
+} from "@alpha7/shared";
 import type {
   ArenaMapConfig,
   ArenaWall,
+  ClientPickup,
   ClientPlayer,
   ClientSnapshot,
   InputFrame
 } from "./clientState";
+import type { Alpha7AssetManifest } from "./assets";
 
 export interface LocalPose {
   x: number;
@@ -17,6 +25,7 @@ export interface LocalPose {
 }
 
 interface ArenaRendererProps {
+  assetManifest: Alpha7AssetManifest | null;
   snapshot: ClientSnapshot;
   inputRef: { current: InputFrame };
   fireSignal: number;
@@ -58,6 +67,13 @@ interface Particle {
   baseScale: number;
 }
 
+interface PickupVisual {
+  group: THREE.Group;
+  bobOffset: number;
+  spinSpeed: number;
+  pickupType: ClientPickup["pickupType"];
+}
+
 interface Runtime {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
@@ -68,8 +84,11 @@ interface Runtime {
   tankLayer: THREE.Group;
   projectileLayer: THREE.Group;
   serverProjectileLayer: THREE.Group;
+  pickupLayer: THREE.Group;
   zoneRing: THREE.Mesh;
+  targetZoneRing: THREE.Mesh;
   tankMeshes: Map<string, TankParts>;
+  pickupMeshes: Map<string, PickupVisual>;
   particles: Particle[];
   mapKey: string;
   lastTime: number;
@@ -87,7 +106,9 @@ const COLORS = {
   accent: 0xf06b2b,
   accentHot: 0xff6a2b,
   blue: 0x5c7c8c,
-  success: 0x88a06a
+  success: 0x88a06a,
+  warning: 0xf0b45b,
+  danger: 0xd75845
 } as const;
 
 const TANK_RADIUS = 34;
@@ -101,8 +122,10 @@ const lerpAngle = (from: number, to: number, amount: number): number => {
   return from + delta * amount;
 };
 
-const mapKey = (map: ArenaMapConfig): string =>
-  `${map.source}:${map.id}:${map.width}:${map.height}:${map.walls.length}`;
+const mapKey = (map: ArenaMapConfig, assetManifest?: Alpha7AssetManifest | null): string =>
+  `${map.source}:${map.id}:${map.width}:${map.height}:${map.walls.length}:${
+    assetManifest?.maps?.wallConcrete?.texture ?? "wall-procedural"
+  }:${assetManifest?.maps?.floorConcrete?.texture ?? "floor-procedural"}`;
 
 const hasServerPose = (player: ClientPlayer): boolean =>
   Math.abs(player.x) > 1 ||
@@ -112,9 +135,10 @@ const hasServerPose = (player: ClientPlayer): boolean =>
 
 const canDriveLocalTank = (snapshot: ClientSnapshot): boolean =>
   snapshot.roomId === "local" ||
-  snapshot.matchState === "running" ||
-  snapshot.matchState === "danger" ||
-  snapshot.matchState === "final_zone";
+  ((snapshot.matchState === "running" ||
+    snapshot.matchState === "danger" ||
+    snapshot.matchState === "final_zone") &&
+    Boolean(snapshot.self?.isAlive && !snapshot.self.isSpectator));
 
 const spawnForIndex = (map: ArenaMapConfig, index: number): { x: number; y: number } => {
   const spawn = map.spawns[index % Math.max(1, map.spawns.length)];
@@ -144,12 +168,12 @@ const disposeObject = (object: THREE.Object3D): void => {
   });
 };
 
-const createZoneRing = (): THREE.Mesh => {
-  const geometry = new THREE.RingGeometry(0.92, 1, 96);
+const createZoneRing = (color: number, opacity: number, inner = 0.92, outer = 1): THREE.Mesh => {
+  const geometry = new THREE.RingGeometry(inner, outer, 96);
   const material = new THREE.MeshBasicMaterial({
-    color: COLORS.accent,
+    color,
     transparent: true,
-    opacity: 0.48,
+    opacity,
     side: THREE.DoubleSide
   });
   const ring = new THREE.Mesh(geometry, material);
@@ -159,13 +183,32 @@ const createZoneRing = (): THREE.Mesh => {
   return ring;
 };
 
-const createWallMesh = (wall: ArenaWall): THREE.Mesh => {
+const applyOptionalTexture = (material: THREE.MeshStandardMaterial, texturePath?: string | null): void => {
+  if (!texturePath) return;
+
+  new THREE.TextureLoader().load(
+    texturePath,
+    (texture) => {
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      texture.colorSpace = THREE.SRGBColorSpace;
+      material.map = texture;
+      material.color.set(0xffffff);
+      material.needsUpdate = true;
+    },
+    undefined,
+    () => undefined
+  );
+};
+
+const createWallMesh = (wall: ArenaWall, assetManifest?: Alpha7AssetManifest | null): THREE.Mesh => {
   const geometry = new THREE.BoxGeometry(wall.width, wall.depth, wall.height);
   const material = new THREE.MeshStandardMaterial({
     color: COLORS.wall,
     roughness: 0.86,
     metalness: 0.02
   });
+  applyOptionalTexture(material, assetManifest?.maps?.wallConcrete?.texture);
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.set(wall.x, wall.depth / 2, wall.y);
   mesh.castShadow = false;
@@ -173,16 +216,15 @@ const createWallMesh = (wall: ArenaWall): THREE.Mesh => {
   return mesh;
 };
 
-const createGround = (map: ArenaMapConfig): THREE.Group => {
+const createGround = (map: ArenaMapConfig, assetManifest?: Alpha7AssetManifest | null): THREE.Group => {
   const group = new THREE.Group();
-  const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(map.width, map.height, 1, 1),
-    new THREE.MeshStandardMaterial({
-      color: COLORS.ground,
-      roughness: 0.92,
-      metalness: 0
-    })
-  );
+  const floorMaterial = new THREE.MeshStandardMaterial({
+    color: COLORS.ground,
+    roughness: 0.92,
+    metalness: 0
+  });
+  applyOptionalTexture(floorMaterial, assetManifest?.maps?.floorConcrete?.texture);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(map.width, map.height, 1, 1), floorMaterial);
   floor.rotation.x = -Math.PI / 2;
   floor.position.set(map.width / 2, 0, map.height / 2);
   floor.receiveShadow = true;
@@ -201,6 +243,62 @@ const createGround = (map: ArenaMapConfig): THREE.Group => {
   group.add(grid);
 
   return group;
+};
+
+const pickupColor = (pickupType: ClientPickup["pickupType"]): number => {
+  switch (PICKUP_CONFIG[pickupType].effect) {
+    case "repair":
+      return COLORS.success;
+    case "armor":
+      return COLORS.blue;
+    case "ammo":
+      return COLORS.accent;
+    case "speed":
+      return COLORS.warning;
+    case "ability":
+      return COLORS.white;
+    case "smoke":
+      return COLORS.ink;
+    default:
+      return COLORS.danger;
+  }
+};
+
+const createPickupMesh = (pickup: ClientPickup): PickupVisual => {
+  const color = pickupColor(pickup.pickupType);
+  const group = new THREE.Group();
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(Math.max(10, pickup.radius * 0.55), 3.5, 10, 24),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.82 })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  group.add(ring);
+
+  const core = new THREE.Mesh(
+    new THREE.OctahedronGeometry(Math.max(8, pickup.radius * 0.38), 0),
+    new THREE.MeshStandardMaterial({
+      color,
+      emissive: new THREE.Color(color).multiplyScalar(0.18),
+      roughness: 0.4,
+      metalness: 0.15
+    })
+  );
+  core.position.y = 18;
+  group.add(core);
+
+  const glow = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.5, 8, 28, 8),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.18 })
+  );
+  glow.position.y = 14;
+  group.add(glow);
+
+  return {
+    group,
+    bobOffset: Math.random() * Math.PI * 2,
+    spinSpeed: 0.6 + Math.random() * 0.55,
+    pickupType: pickup.pickupType
+  };
 };
 
 const createTankMesh = (player: ClientPlayer): TankParts => {
@@ -238,11 +336,17 @@ const createTankMesh = (player: ClientPlayer): TankParts => {
   turret.add(turretBase);
 
   const barrel = new THREE.Mesh(
-    new THREE.BoxGeometry(54, 8, 7),
-    new THREE.MeshStandardMaterial({ color: isSelf ? COLORS.accent : COLORS.accentHot, roughness: 0.5 })
+    new THREE.BoxGeometry(58, 5, 5),
+    new THREE.MeshStandardMaterial({ color: turretColor, roughness: 0.62, metalness: 0.08 })
   );
-  barrel.position.x = 39;
+  barrel.position.x = 42;
   turret.add(barrel);
+  const muzzle = new THREE.Mesh(
+    new THREE.BoxGeometry(8, 7, 7),
+    new THREE.MeshStandardMaterial({ color: isSelf ? COLORS.accent : COLORS.accentHot, roughness: 0.42 })
+  );
+  muzzle.position.x = 74;
+  turret.add(muzzle);
   group.add(turret);
 
   const statusRail = new THREE.Group();
@@ -311,9 +415,13 @@ const updateCamera = (
   runtime.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
 };
 
-const rebuildMap = (runtime: Runtime, snapshot: ClientSnapshot): void => {
+const rebuildMap = (
+  runtime: Runtime,
+  snapshot: ClientSnapshot,
+  assetManifest?: Alpha7AssetManifest | null
+): void => {
   const map = snapshot.map;
-  runtime.mapKey = mapKey(map);
+  runtime.mapKey = mapKey(map, assetManifest);
 
   while (runtime.wallLayer.children.length > 0) {
     const child = runtime.wallLayer.children[0];
@@ -322,10 +430,10 @@ const rebuildMap = (runtime: Runtime, snapshot: ClientSnapshot): void => {
     disposeObject(child);
   }
 
-  const ground = createGround(map);
+  const ground = createGround(map, assetManifest);
   runtime.wallLayer.add(ground);
   for (const wall of map.walls) {
-    runtime.wallLayer.add(createWallMesh(wall));
+    runtime.wallLayer.add(createWallMesh(wall, assetManifest));
   }
 };
 
@@ -471,35 +579,105 @@ const renderTanks = (runtime: Runtime, dt: number): void => {
   }
 };
 
-const updateZone = (runtime: Runtime, snapshot: ClientSnapshot): void => {
+const updateZone = (runtime: Runtime, snapshot: ClientSnapshot, time: number): void => {
   const radius = snapshot.zone.radius || snapshot.zone.targetRadius;
   runtime.zoneRing.visible = radius > 8;
+  runtime.targetZoneRing.visible = snapshot.zone.targetRadius > 8;
+
+  const zoneMaterial = runtime.zoneRing.material as THREE.MeshBasicMaterial;
+  const targetMaterial = runtime.targetZoneRing.material as THREE.MeshBasicMaterial;
+  const hotPhase = snapshot.matchState === "danger" || snapshot.matchState === "final_zone";
+  zoneMaterial.color.set(hotPhase ? COLORS.danger : COLORS.warning);
+  zoneMaterial.opacity = (hotPhase ? 0.56 : 0.38) + Math.sin(time / 210) * 0.04;
+  targetMaterial.opacity = 0.18 + Math.sin(time / 280) * 0.03;
+  if (runtime.targetZoneRing.visible) {
+    runtime.targetZoneRing.position.set(snapshot.zone.targetX, 2, snapshot.zone.targetY);
+    runtime.targetZoneRing.scale.set(snapshot.zone.targetRadius, snapshot.zone.targetRadius, snapshot.zone.targetRadius);
+  }
+
   if (!runtime.zoneRing.visible) return;
   runtime.zoneRing.position.set(snapshot.zone.x, 4, snapshot.zone.y);
   runtime.zoneRing.scale.set(radius, radius, radius);
 };
 
-const createShotParticle = (pose: LocalPose, input: InputFrame): Particle => {
-  const geometry = new THREE.SphereGeometry(10, 12, 8);
-  const material = new THREE.MeshBasicMaterial({ color: COLORS.accentHot });
+const updatePickups = (runtime: Runtime, snapshot: ClientSnapshot, time: number): void => {
+  const activeIds = new Set<string>();
+  const bobTime = time / 340;
+
+  for (const pickup of snapshot.pickups.filter((item) => item.isActive).slice(0, 28)) {
+    let visual = runtime.pickupMeshes.get(pickup.id);
+    if (!visual || visual.pickupType !== pickup.pickupType) {
+      if (visual) {
+        runtime.pickupLayer.remove(visual.group);
+        disposeObject(visual.group);
+      }
+      visual = createPickupMesh(pickup);
+      runtime.pickupMeshes.set(pickup.id, visual);
+      runtime.pickupLayer.add(visual.group);
+    }
+
+    visual.group.position.set(pickup.x, 10 + Math.sin(bobTime + visual.bobOffset) * 5.5, pickup.y);
+    visual.group.rotation.y = bobTime * visual.spinSpeed;
+    activeIds.add(pickup.id);
+  }
+
+  for (const [id, visual] of runtime.pickupMeshes) {
+    if (activeIds.has(id)) continue;
+    runtime.pickupLayer.remove(visual.group);
+    disposeObject(visual.group);
+    runtime.pickupMeshes.delete(id);
+  }
+};
+
+const createShotParticle = (
+  pose: LocalPose,
+  input: InputFrame,
+  weaponType: ClientPlayer["weaponType"] = "cannon"
+): Particle => {
+  const weapon = WEAPON_CONFIG[weaponType];
+  const color =
+    weaponType === "machine_gun"
+      ? COLORS.white
+      : weaponType === "explosive"
+        ? COLORS.warning
+        : weaponType === "light_cannon"
+          ? COLORS.blue
+          : COLORS.accentHot;
+  const geometry = new THREE.SphereGeometry(weaponType === "machine_gun" ? 7 : 10, 12, 8);
+  const material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 });
   const mesh = new THREE.Mesh(geometry, material);
   const dirX = input.aimDirX || Math.cos(pose.turretRotation);
   const dirY = input.aimDirY || Math.sin(pose.turretRotation);
   mesh.position.set(pose.x + dirX * 48, 24, pose.y + dirY * 48);
   return {
     mesh,
-    velocity: new THREE.Vector3(dirX * 900, 0, dirY * 900),
+    velocity: new THREE.Vector3(dirX * weapon.projectileSpeed * 1.1, 0, dirY * weapon.projectileSpeed * 1.1),
     life: 0,
-    maxLife: 620,
+    maxLife: weaponType === "machine_gun" ? 240 : weaponType === "explosive" ? 760 : 520,
     kind: "shot",
-    baseScale: 1
+    baseScale: weaponType === "explosive" ? 1.35 : weaponType === "machine_gun" ? 0.72 : 1
   };
 };
 
-const createAbilityParticle = (pose: LocalPose): Particle => {
-  const geometry = new THREE.RingGeometry(78, 82, 64);
+const createAbilityParticle = (
+  pose: LocalPose,
+  abilityType: ClientPlayer["abilityType"] = "smoke"
+): Particle => {
+  const ability = ABILITY_CONFIG[abilityType];
+  const effectColor =
+    abilityType === "repair"
+      ? COLORS.success
+      : abilityType === "shield_pulse"
+        ? COLORS.blue
+        : abilityType === "speed_burst"
+          ? COLORS.warning
+          : abilityType === "barrage"
+            ? COLORS.accentHot
+            : COLORS.ink;
+  const radius = Math.max(64, ability.radius || (abilityType === "speed_burst" ? 110 : 88));
+  const geometry = new THREE.RingGeometry(radius * 0.92, radius, 64);
   const material = new THREE.MeshBasicMaterial({
-    color: COLORS.success,
+    color: effectColor,
     transparent: true,
     opacity: 0.58,
     side: THREE.DoubleSide
@@ -528,6 +706,10 @@ const updateParticles = (runtime: Runtime, dt: number): void => {
       const material = (particle.mesh as THREE.Mesh).material as THREE.MeshBasicMaterial;
       material.opacity = 0.58 * (1 - t);
       particle.mesh.scale.setScalar(particle.baseScale + t * 2.4);
+    } else {
+      const material = (particle.mesh as THREE.Mesh).material as THREE.MeshBasicMaterial;
+      material.opacity = 0.95 * (1 - t);
+      particle.mesh.scale.setScalar(particle.baseScale * (1 + t * 0.3));
     }
     if (particle.life >= particle.maxLife) {
       runtime.projectileLayer.remove(particle.mesh);
@@ -546,16 +728,49 @@ const updateServerProjectiles = (runtime: Runtime, snapshot: ClientSnapshot): vo
   }
 
   for (const projectile of snapshot.projectiles.slice(0, 32)) {
-    const mesh = new THREE.Mesh(
+    const weapon = WEAPON_CONFIG[projectile.weaponType];
+    const color =
+      projectile.weaponType === "machine_gun"
+        ? COLORS.white
+        : projectile.weaponType === "explosive"
+          ? COLORS.warning
+          : projectile.weaponType === "light_cannon"
+            ? COLORS.blue
+            : COLORS.accentHot;
+    const group = new THREE.Group();
+    group.position.set(projectile.x, 18, projectile.y);
+    group.rotation.y = -Math.atan2(projectile.velocityY, projectile.velocityX);
+
+    const shell = new THREE.Mesh(
       new THREE.SphereGeometry(Math.max(4, projectile.radius), 10, 6),
-      new THREE.MeshBasicMaterial({ color: COLORS.accentHot })
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.96 })
     );
-    mesh.position.set(projectile.x, 18, projectile.y);
-    runtime.serverProjectileLayer.add(mesh);
+    group.add(shell);
+
+    const trailLength = clamp(weapon.projectileSpeed / 18, 18, projectile.weaponType === "explosive" ? 58 : 44);
+    const trail = new THREE.Mesh(
+      new THREE.BoxGeometry(trailLength, projectile.radius * 0.9, projectile.radius * 0.9),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28 })
+    );
+    trail.position.x = -trailLength * 0.58;
+    group.add(trail);
+
+    if (projectile.weaponType === "explosive") {
+      const halo = new THREE.Mesh(
+        new THREE.RingGeometry(projectile.radius * 1.25, projectile.radius * 1.8, 20),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.22, side: THREE.DoubleSide })
+      );
+      halo.rotation.x = -Math.PI / 2;
+      halo.position.y = -6;
+      group.add(halo);
+    }
+
+    runtime.serverProjectileLayer.add(group);
   }
 };
 
 export function ArenaRenderer({
+  assetManifest,
   snapshot,
   inputRef,
   fireSignal,
@@ -608,8 +823,10 @@ export function ArenaRenderer({
     const tankLayer = new THREE.Group();
     const projectileLayer = new THREE.Group();
     const serverProjectileLayer = new THREE.Group();
-    const zoneRing = createZoneRing();
-    scene.add(wallLayer, zoneRing, tankLayer, serverProjectileLayer, projectileLayer);
+    const pickupLayer = new THREE.Group();
+    const zoneRing = createZoneRing(COLORS.warning, 0.42);
+    const targetZoneRing = createZoneRing(COLORS.white, 0.22, 0.97, 1);
+    scene.add(wallLayer, targetZoneRing, zoneRing, pickupLayer, tankLayer, serverProjectileLayer, projectileLayer);
 
     const runtime: Runtime = {
       renderer,
@@ -621,8 +838,11 @@ export function ArenaRenderer({
       tankLayer,
       projectileLayer,
       serverProjectileLayer,
+      pickupLayer,
       zoneRing,
+      targetZoneRing,
       tankMeshes: new Map(),
+      pickupMeshes: new Map(),
       particles: [],
       mapKey: "",
       lastTime: performance.now(),
@@ -645,8 +865,8 @@ export function ArenaRenderer({
 
     const step = (dt: number): void => {
       const currentSnapshot = snapshotRef.current;
-      if (runtime.mapKey !== mapKey(currentSnapshot.map)) {
-        rebuildMap(runtime, currentSnapshot);
+      if (runtime.mapKey !== mapKey(currentSnapshot.map, assetManifest)) {
+        rebuildMap(runtime, currentSnapshot, assetManifest);
       }
 
       const input = inputRef.current;
@@ -671,7 +891,8 @@ export function ArenaRenderer({
       updateAimFromScreen(runtime, canvas, input, localPoseRef.current);
       updateTankTargets(runtime, currentSnapshot, localPoseRef.current);
       renderTanks(runtime, dt);
-      updateZone(runtime, currentSnapshot);
+      updateZone(runtime, currentSnapshot, runtime.lastTime);
+      updatePickups(runtime, currentSnapshot, runtime.lastTime);
       updateServerProjectiles(runtime, currentSnapshot);
       updateParticles(runtime, dt);
       onLocalPose({ ...localPoseRef.current });
@@ -713,7 +934,7 @@ export function ArenaRenderer({
       disposeObject(scene);
       runtimeRef.current = null;
     };
-  }, [inputRef, onLocalPose]);
+  }, [assetManifest, inputRef, onLocalPose]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;

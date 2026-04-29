@@ -1,7 +1,13 @@
 import { EventEmitter } from "node:events";
 import { ErrorCode, ServerError, type AuthContext, type Client } from "colyseus";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BATTLE_ROYALE_ROOM, SERVER_MESSAGE_TYPES } from "@alpha7/shared";
+import {
+  BATTLE_ROYALE_ROOM,
+  PICKUP_CONFIG,
+  SERVER_MESSAGE_TYPES,
+  WEAPON_CONFIG,
+  isWallCollision
+} from "@alpha7/shared";
 import type { ServerConfig } from "../config.js";
 import { BattleRoyaleRoom } from "./BattleRoyaleRoom.js";
 
@@ -179,6 +185,49 @@ const wallLeft = (arena: TestArenaConfig, wall: TestArenaWall): number =>
 
 const wallCenterY = (arena: TestArenaConfig, wall: TestArenaWall): number =>
   arena.collisionRects?.includes(wall) ? wall.y + wall.height / 2 : wall.y;
+
+const findOpenDuelLine = (arena: TestArenaConfig) => {
+  const bounds = arenaBounds(arena);
+  const candidates = [
+    { dx: 90, dy: 0 },
+    { dx: -90, dy: 0 },
+    { dx: 0, dy: 90 },
+    { dx: 0, dy: -90 },
+    { dx: 150, dy: 0 },
+    { dx: 0, dy: 150 }
+  ];
+
+  for (const spawn of arena.spawnPoints) {
+    for (const candidate of candidates) {
+      const x = spawn.x + candidate.dx;
+      const y = spawn.y + candidate.dy;
+      if (
+        x <= bounds.minX + TEST_TANK_RADIUS ||
+        x >= bounds.maxX - TEST_TANK_RADIUS ||
+        y <= bounds.minY + TEST_TANK_RADIUS ||
+        y >= bounds.maxY - TEST_TANK_RADIUS
+      ) {
+        continue;
+      }
+      if (isWallCollision(arena as never, x, y, TEST_TANK_RADIUS)) continue;
+
+      return {
+        attackerX: spawn.x,
+        attackerY: spawn.y,
+        targetX: x,
+        targetY: y
+      };
+    }
+  }
+
+  const fallback = arena.spawnPoints[0] ?? { x: bounds.minX + 120, y: bounds.minY + 120 };
+  return {
+    attackerX: fallback.x,
+    attackerY: fallback.y,
+    targetX: fallback.x + 90,
+    targetY: fallback.y
+  };
+};
 
 afterEach(() => {
   for (const room of rooms.splice(0)) {
@@ -733,5 +782,444 @@ describe("BattleRoyaleRoom phase 3 lifecycle", () => {
         code: "invalid_state"
       })
     );
+  });
+
+  it("simulates projectile hits, awards the kill, and finishes on the last elimination", async () => {
+    const { room, internals } = await makeRoom({
+      seed: "projectile-finish-seed"
+    });
+    const host = makeClient("host1");
+    const guest = makeClient("guest1");
+
+    room.onJoin(host.client, { playerName: "Host", archetypeId: "quill" });
+    room.onJoin(guest.client, { playerName: "Guest", archetypeId: "atlas" });
+    internals.handleStartMessage(host.client, {});
+    internals.advanceTimedLifecycle(room.state.match.countdownEndsAt);
+
+    const arena = readArenaConfig(room);
+    const duel = findOpenDuelLine(arena);
+    const hostPlayer = room.state.players.get(host.client.sessionId);
+    const guestPlayer = room.state.players.get(guest.client.sessionId);
+    expect(hostPlayer).toBeDefined();
+    expect(guestPlayer).toBeDefined();
+    if (!hostPlayer || !guestPlayer) return;
+
+    hostPlayer.x = duel.attackerX;
+    hostPlayer.y = duel.attackerY;
+    guestPlayer.x = duel.targetX;
+    guestPlayer.y = duel.targetY;
+    guestPlayer.armor = 0;
+    guestPlayer.health = 6;
+
+    internals.handleFireMessage(host.client, {
+      sequence: 1,
+      weaponType: hostPlayer.weaponType,
+      aimX: guestPlayer.x,
+      aimY: guestPlayer.y
+    });
+    internals.onSimulationTick(100);
+
+    expect(room.state.projectiles.length).toBe(0);
+    expect(guestPlayer).toMatchObject({
+      isAlive: false,
+      isSpectator: true,
+      placement: 2,
+      deaths: 1
+    });
+    expect(hostPlayer).toMatchObject({
+      kills: 1,
+      placement: 1
+    });
+    expect(room.state.matchState).toBe("finished");
+    expect(room.state.match.alivePlayers).toBe(1);
+  });
+
+  it("applies zone damage outside the safe area during danger and final zone states", async () => {
+    const { room, internals } = await makeRoom({
+      seed: "zone-damage-seed"
+    });
+    const host = makeClient("host1");
+    const guest = makeClient("guest1");
+
+    room.onJoin(host.client, { playerName: "Host", archetypeId: "nova" });
+    room.onJoin(guest.client, { playerName: "Guest", archetypeId: "rook" });
+    internals.handleStartMessage(host.client, {});
+    internals.advanceTimedLifecycle(room.state.match.countdownEndsAt);
+
+    const runningStartedAt = room.state.match.stateStartedAt;
+    internals.advanceTimedLifecycle(runningStartedAt + 90_000);
+    expect(room.state.matchState).toBe("danger");
+
+    const arena = readArenaConfig(room);
+    const bounds = arenaBounds(arena);
+    const hostPlayer = room.state.players.get(host.client.sessionId);
+    const guestPlayer = room.state.players.get(guest.client.sessionId);
+    expect(hostPlayer).toBeDefined();
+    expect(guestPlayer).toBeDefined();
+    if (!hostPlayer || !guestPlayer) return;
+
+    hostPlayer.x = room.state.zone.x;
+    hostPlayer.y = room.state.zone.y;
+
+    const outsideRight = Math.min(
+      bounds.maxX - TEST_TANK_RADIUS,
+      room.state.zone.x + room.state.zone.radius + 120
+    );
+    guestPlayer.x =
+      outsideRight > room.state.zone.x + room.state.zone.radius
+        ? outsideRight
+        : Math.max(bounds.minX + TEST_TANK_RADIUS, room.state.zone.x - room.state.zone.radius - 120);
+    guestPlayer.y = room.state.zone.y;
+    guestPlayer.shield = 0;
+    guestPlayer.armor = 0;
+    guestPlayer.health = 100;
+
+    for (let tick = 0; tick < 30; tick += 1) {
+      internals.onSimulationTick(33);
+    }
+
+    expect(guestPlayer.health).toBe(93);
+    internals.onSimulationTick(33);
+    expect(guestPlayer.health).toBe(92);
+
+    internals.advanceTimedLifecycle(runningStartedAt + 150_000);
+    expect(room.state.matchState).toBe("final_zone");
+    const healthBeforeFinal = guestPlayer.health;
+    for (let tick = 0; tick < 10; tick += 1) {
+      internals.onSimulationTick(100);
+    }
+    expect(guestPlayer.health).toBeLessThan(healthBeforeFinal);
+  });
+
+  it("resolves a deterministic winner when final-zone damage eliminates all tanks in one tick", async () => {
+    const { room, internals } = await makeRoom({
+      seed: "zone-tiebreak-seed"
+    });
+    const host = makeClient("host1");
+    const guest = makeClient("guest1");
+    const closer = makeClient("closer1");
+
+    room.onJoin(host.client, { playerName: "Host", archetypeId: "nova" });
+    room.onJoin(guest.client, { playerName: "Guest", archetypeId: "rook" });
+    room.onJoin(closer.client, { playerName: "Closer", archetypeId: "quill" });
+    internals.handleStartMessage(host.client, {});
+    internals.advanceTimedLifecycle(room.state.match.countdownEndsAt);
+
+    const runningStartedAt = room.state.match.stateStartedAt;
+    internals.advanceTimedLifecycle(runningStartedAt + 90_000);
+    internals.advanceTimedLifecycle(runningStartedAt + 150_000);
+    expect(room.state.matchState).toBe("final_zone");
+
+    const arena = readArenaConfig(room);
+    const bounds = arenaBounds(arena);
+    const hostPlayer = room.state.players.get(host.client.sessionId);
+    const guestPlayer = room.state.players.get(guest.client.sessionId);
+    const closerPlayer = room.state.players.get(closer.client.sessionId);
+    expect(hostPlayer).toBeDefined();
+    expect(guestPlayer).toBeDefined();
+    expect(closerPlayer).toBeDefined();
+    if (!hostPlayer || !guestPlayer || !closerPlayer) return;
+
+    const corners = [
+      { x: bounds.minX + TEST_TANK_RADIUS, y: bounds.minY + TEST_TANK_RADIUS },
+      { x: bounds.maxX - TEST_TANK_RADIUS, y: bounds.minY + TEST_TANK_RADIUS },
+      { x: bounds.minX + TEST_TANK_RADIUS, y: bounds.maxY - TEST_TANK_RADIUS },
+      { x: bounds.maxX - TEST_TANK_RADIUS, y: bounds.maxY - TEST_TANK_RADIUS }
+    ].sort(
+      (left, right) =>
+        Math.hypot(right.x - room.state.zone.x, right.y - room.state.zone.y) -
+        Math.hypot(left.x - room.state.zone.x, left.y - room.state.zone.y)
+    );
+    const outside = corners[0];
+    expect(Math.hypot(outside.x - room.state.zone.x, outside.y - room.state.zone.y)).toBeGreaterThan(
+      room.state.zone.radius
+    );
+
+    hostPlayer.x = outside.x;
+    hostPlayer.y = outside.y;
+    guestPlayer.x = outside.x;
+    guestPlayer.y = outside.y;
+    closerPlayer.x = outside.x;
+    closerPlayer.y = outside.y;
+    hostPlayer.shield = 0;
+    hostPlayer.armor = 0;
+    hostPlayer.health = 1;
+    hostPlayer.damageDealt = 30;
+    guestPlayer.shield = 0;
+    guestPlayer.armor = 0;
+    guestPlayer.health = 1;
+    guestPlayer.damageDealt = 50;
+    closerPlayer.shield = 0;
+    closerPlayer.armor = 0;
+    closerPlayer.health = 1;
+    closerPlayer.damageDealt = 80;
+
+    internals.onSimulationTick(1000);
+
+    expect(room.state.matchState).toBe("finished");
+    expect(room.state.match.alivePlayers).toBe(1);
+    expect(closerPlayer).toMatchObject({
+      isAlive: true,
+      isSpectator: false,
+      placement: 1
+    });
+    expect(hostPlayer).toMatchObject({
+      isAlive: false,
+      isSpectator: true,
+      placement: 3
+    });
+    expect(guestPlayer).toMatchObject({
+      isAlive: false,
+      isSpectator: true,
+      placement: 3
+    });
+  });
+
+  it("collects pickups, applies server-side effects, and respawns inactive pickups", async () => {
+    const { room, internals } = await makeRoom({
+      seed: "pickup-effects-seed"
+    });
+    const host = makeClient("host1");
+    const guest = makeClient("guest1");
+
+    room.onJoin(host.client, { playerName: "Host", archetypeId: "atlas" });
+    room.onJoin(guest.client, { playerName: "Guest", archetypeId: "rook" });
+    internals.handleStartMessage(host.client, {});
+    internals.advanceTimedLifecycle(room.state.match.countdownEndsAt);
+
+    const hostPlayer = room.state.players.get(host.client.sessionId);
+    const pickup = room.state.pickups[0];
+    expect(hostPlayer).toBeDefined();
+    expect(pickup).toBeDefined();
+    if (!hostPlayer || !pickup) return;
+
+    hostPlayer.health = 50;
+    pickup.pickupType = "health_repair";
+    pickup.value = PICKUP_CONFIG.health_repair.value;
+    pickup.durationMs = PICKUP_CONFIG.health_repair.durationMs;
+    pickup.x = hostPlayer.x;
+    pickup.y = hostPlayer.y;
+    pickup.isActive = true;
+    internals.onSimulationTick(16);
+
+    expect(hostPlayer.health).toBe(85);
+    expect(pickup.isActive).toBe(false);
+
+    pickup.isActive = true;
+    pickup.pickupType = "ability_charge";
+    pickup.value = PICKUP_CONFIG.ability_charge.value;
+    pickup.durationMs = PICKUP_CONFIG.ability_charge.durationMs;
+    hostPlayer.abilityCharge = 0;
+    internals.onSimulationTick(16);
+    expect(hostPlayer.abilityCharge).toBeGreaterThanOrEqual(PICKUP_CONFIG.ability_charge.value);
+
+    pickup.isActive = true;
+    pickup.pickupType = "barrage_explosive";
+    pickup.value = PICKUP_CONFIG.barrage_explosive.value;
+    pickup.durationMs = PICKUP_CONFIG.barrage_explosive.durationMs;
+    hostPlayer.ammo = 24;
+    internals.onSimulationTick(16);
+    expect(hostPlayer.weaponType).toBe("explosive");
+    expect(hostPlayer.ammo).toBe(WEAPON_CONFIG.explosive.ammoCost * 3);
+
+    pickup.isActive = false;
+    pickup.respawnsAt = Date.now() - 1;
+    internals.onSimulationTick(16);
+    expect(pickup.isActive).toBe(true);
+  });
+
+  it("applies speed burst movement and rejects ability spam while cooling down", async () => {
+    const { room, internals } = await makeRoom({
+      seed: "speed-burst-seed"
+    });
+    const host = makeClient("host1");
+    const guest = makeClient("guest1");
+
+    room.onJoin(host.client, { playerName: "Host", archetypeId: "nova" });
+    room.onJoin(guest.client, { playerName: "Guest", archetypeId: "atlas" });
+    internals.handleStartMessage(host.client, {});
+    internals.advanceTimedLifecycle(room.state.match.countdownEndsAt);
+
+    const arena = readArenaConfig(room);
+    const duel = findOpenDuelLine(arena);
+    const hostPlayer = room.state.players.get(host.client.sessionId);
+    expect(hostPlayer).toBeDefined();
+    if (!hostPlayer) return;
+
+    hostPlayer.x = duel.attackerX;
+    hostPlayer.y = duel.attackerY;
+
+    internals.handleAbilityMessage(host.client, {
+      sequence: 1,
+      abilityType: "speed_burst"
+    });
+    internals.onSimulationTick(16);
+
+    const startX = hostPlayer.x;
+    const startY = hostPlayer.y;
+    const moveX = Math.sign(duel.targetX - duel.attackerX) || 1;
+    const moveY = Math.sign(duel.targetY - duel.attackerY);
+    internals.handleInputMessage(host.client, {
+      sequence: 9,
+      tick: 9,
+      moveX,
+      moveY,
+      aimX: duel.targetX,
+      aimY: duel.targetY,
+      fire: false,
+      ability: false
+    });
+    internals.onSimulationTick(100);
+
+    expect(Math.hypot(hostPlayer.x - startX, hostPlayer.y - startY)).toBeGreaterThan(35);
+    expect(hostPlayer.abilityCooldownMs).toBeGreaterThan(0);
+    expect(hostPlayer.abilityCharge).toBeLessThan(100);
+
+    internals.handleAbilityMessage(host.client, {
+      sequence: 2,
+      abilityType: "speed_burst"
+    });
+    expect(host.send).toHaveBeenCalledWith(
+      SERVER_MESSAGE_TYPES.ERROR,
+      expect.objectContaining({
+        code: "rate_limited",
+        field: "ability"
+      })
+    );
+  });
+
+  it("drops stale fire intents and rejects weapon spam while cooling down", async () => {
+    const { room, internals } = await makeRoom({
+      seed: "fire-cooldown-seed"
+    });
+    const host = makeClient("host1");
+    const guest = makeClient("guest1");
+
+    room.onJoin(host.client, { playerName: "Host", archetypeId: "nova" });
+    room.onJoin(guest.client, { playerName: "Guest", archetypeId: "rook" });
+    internals.handleStartMessage(host.client, {});
+    internals.advanceTimedLifecycle(room.state.match.countdownEndsAt);
+
+    const arena = readArenaConfig(room);
+    const duel = findOpenDuelLine(arena);
+    const hostPlayer = room.state.players.get(host.client.sessionId);
+    expect(hostPlayer).toBeDefined();
+    if (!hostPlayer) return;
+    hostPlayer.x = duel.attackerX;
+    hostPlayer.y = duel.attackerY;
+
+    internals.fireIntents.set(host.client.sessionId, {
+      sequence: 1,
+      weaponType: hostPlayer.weaponType,
+      aimX: duel.targetX,
+      aimY: duel.targetY,
+      receivedAt: Date.now() - 1_000
+    });
+    internals.onSimulationTick(16);
+
+    expect(room.state.projectiles.length).toBe(0);
+    expect(internals.fireIntents.has(host.client.sessionId)).toBe(false);
+
+    internals.handleFireMessage(host.client, {
+      sequence: 2,
+      weaponType: hostPlayer.weaponType,
+      aimX: duel.targetX,
+      aimY: duel.targetY
+    });
+    internals.onSimulationTick(16);
+    expect(room.state.projectiles.length).toBe(1);
+
+    internals.handleFireMessage(host.client, {
+      sequence: 3,
+      weaponType: hostPlayer.weaponType,
+      aimX: duel.targetX,
+      aimY: duel.targetY
+    });
+    expect(host.send).toHaveBeenCalledWith(
+      SERVER_MESSAGE_TYPES.ERROR,
+      expect.objectContaining({
+        code: "rate_limited",
+        field: "fire"
+      })
+    );
+  });
+
+  it("resets the match once all connected players vote for a rematch", async () => {
+    const { room, internals } = await makeRoom({
+      seed: "rematch-seed"
+    });
+    const host = makeClient("host1");
+    const guest = makeClient("guest1");
+
+    room.onJoin(host.client, { playerName: "Host", archetypeId: "quill" });
+    room.onJoin(guest.client, { playerName: "Guest", archetypeId: "atlas" });
+    internals.handleStartMessage(host.client, {});
+    internals.advanceTimedLifecycle(room.state.match.countdownEndsAt);
+
+    const arena = readArenaConfig(room);
+    const duel = findOpenDuelLine(arena);
+    const hostPlayer = room.state.players.get(host.client.sessionId);
+    const guestPlayer = room.state.players.get(guest.client.sessionId);
+    expect(hostPlayer).toBeDefined();
+    expect(guestPlayer).toBeDefined();
+    if (!hostPlayer || !guestPlayer) return;
+
+    hostPlayer.x = duel.attackerX;
+    hostPlayer.y = duel.attackerY;
+    guestPlayer.x = duel.targetX;
+    guestPlayer.y = duel.targetY;
+    guestPlayer.armor = 0;
+    guestPlayer.health = 6;
+
+    internals.handleFireMessage(host.client, {
+      sequence: 1,
+      weaponType: hostPlayer.weaponType,
+      aimX: guestPlayer.x,
+      aimY: guestPlayer.y
+    });
+    internals.onSimulationTick(100);
+    expect(room.state.matchState).toBe("finished");
+
+    const previousMatchId = room.state.match.matchId;
+    const previousRound = room.state.match.round;
+
+    internals.handleRematchMessage(host.client, {
+      ready: true,
+      previousMatchId
+    });
+    expect(hostPlayer.isReady).toBe(true);
+    expect(room.state.matchState).toBe("finished");
+
+    internals.handleRematchMessage(host.client, {
+      ready: false,
+      previousMatchId
+    });
+    expect(hostPlayer.isReady).toBe(false);
+    expect(room.state.matchState).toBe("finished");
+
+    internals.handleRematchMessage(host.client, {
+      ready: true,
+      previousMatchId
+    });
+    expect(hostPlayer.isReady).toBe(true);
+
+    internals.handleRematchMessage(guest.client, {
+      ready: true,
+      previousMatchId
+    });
+
+    expect(room.state.match.round).toBe(previousRound + 1);
+    expect(room.state.match.matchId).not.toBe(previousMatchId);
+    expect(["waiting", "countdown"]).toContain(room.state.matchState);
+    expect(hostPlayer).toMatchObject({
+      isAlive: true,
+      isSpectator: false,
+      placement: 0
+    });
+    expect(guestPlayer).toMatchObject({
+      isAlive: true,
+      isSpectator: false,
+      placement: 0
+    });
   });
 });

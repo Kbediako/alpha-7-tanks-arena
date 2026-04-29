@@ -20,3 +20,12 @@ The visual direction specifies Rajdhani, Inter, and IBM Plex Mono. The client im
 ## Assets
 
 Initial gameplay uses procedural placeholder meshes and SVG/CSS UI symbols. Generated or replacement assets belong under `apps/client/public/assets/` and should be added to `apps/client/public/assets/manifest.json`.
+
+Current authored placeholders:
+
+- `apps/client/public/assets/ui/icons/reticle.svg`
+- `apps/client/public/assets/ui/icons/repair.svg`
+- `apps/client/public/assets/ui/icons/shield.svg`
+- `apps/client/public/assets/audio/ambient-music.wav` copied from the user-provided local source `/Users/kbediako/Downloads/Sounds/ambient-music.wav` for this project.
+
+These SVG placeholders were created directly for this project and are intentionally simple replacement targets. No generated bitmap assets or external model files are required by the current playable slice.

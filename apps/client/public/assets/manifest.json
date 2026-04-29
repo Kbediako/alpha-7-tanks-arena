@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "assetRoot": "/assets",
+  "strategy": "load-listed-or-fallback-procedural",
+  "fonts": {
+    "rajdhani": {
+      "source": "https://fonts.google.com/specimen/Rajdhani",
+      "cssFamily": "Rajdhani",
+      "fallback": "Inter, system-ui, sans-serif"
+    },
+    "inter": {
+      "source": "https://fonts.google.com/specimen/Inter",
+      "cssFamily": "Inter",
+      "fallback": "system-ui, sans-serif"
+    },
+    "ibmPlexMono": {
+      "source": "https://fonts.google.com/specimen/IBM+Plex+Mono",
+      "cssFamily": "IBM Plex Mono",
+      "fallback": "ui-monospace, monospace"
+    }
+  },
+  "ui": {
+    "icons": {
+      "reticle": "/assets/ui/icons/reticle.svg",
+      "repair": "/assets/ui/icons/repair.svg",
+      "shield": "/assets/ui/icons/shield.svg"
+    }
+  },
+  "tanks": {
+    "nova": {
+      "model": null,
+      "texture": null,
+      "fallback": "procedural-assault-mesh"
+    },
+    "atlas": {
+      "model": null,
+      "texture": null,
+      "fallback": "procedural-balanced-mesh"
+    },
+    "quill": {
+      "model": null,
+      "texture": null,
+      "fallback": "procedural-skirmisher-mesh"
+    },
+    "rook": {
+      "model": null,
+      "texture": null,
+      "fallback": "procedural-support-mesh"
+    }
+  },
+  "maps": {
+    "wallConcrete": {
+      "texture": null,
+      "fallback": "procedural-concrete-material"
+    },
+    "floorConcrete": {
+      "texture": null,
+      "fallback": "procedural-ground-material"
+    }
+  },
+  "fx": {
+    "cannonMuzzle": {
+      "sprite": null,
+      "fallback": "procedural-orange-pulse"
+    },
+    "smoke": {
+      "sprite": null,
+      "fallback": "procedural-translucent-disc"
+    },
+    "zoneWarning": {
+      "sprite": null,
+      "fallback": "procedural-orange-ring"
+    }
+  },
+  "audio": {
+    "ambientMusic": {
+      "wav": "/assets/audio/ambient-music.wav",
+      "fallback": "silent-until-user-gesture"
+    }
+  },
+  "generated": {
+    "readme": "/assets/generated/README.md"
+  }
+}

@@ -84,3 +84,41 @@ Original prompt: Build Alpha-7 Tanks Arena from the requirements in Docs/prompt.
   - Desktop Playwright smoke captured a rendered server-sourced arena; mobile headless smoke verified lobby/HUD/control layout with WebGL fallback.
 - Known follow-up:
   - Vite reports the client bundle chunk exceeds 500 kB after minification because React/three are bundled together; defer code splitting/manual chunks to the next performance pass.
+
+## Combat, endgame, editor, and asset checkpoint
+- Implemented server-authoritative combat systems: fire intents, cooldown validation, cannon/light/MG/explosive projectile simulation, wall/tank collision, splash damage, shield/armor/health damage, kill credit, death/spectator state, placement, winner resolution, zone damage, pickup collection/respawn/effects, ability activation, and rematch reset.
+- Fixed a Colyseus patch reliability risk from the large synced arena JSON by raising the schema encoder buffer at server startup.
+- Added deterministic zero-survivor final-zone resolution so simultaneous deaths still produce a single living placement-1 winner by tiebreaker instead of a dead first-place/no-winner state.
+- Wired rematch votes through replicated `isReady` state so the results UI can show and clear each player's rematch readiness.
+- Expanded the client into a fuller live-demo shell: projectile/pickup/zone rendering, combat effects, spectator/death overlay, results/winner screen, rematch/play-again actions, disconnect/error overlay, compact mobile HUD chips, and mobile ability control state.
+- Added `/editor` with seed/reroll/player-count controls, wall/spawn/pickup/zone overlays, export/copy config, tank skin previews, and mobile HUD/control safe-zone overlays.
+- Added the asset pipeline under `apps/client/public/assets/` with manifest, generated-asset notes, replacement folders, placeholder SVG icons, runtime manifest fetch, manifest-backed UI icon lookup, and optional renderer texture lookup with procedural fallback.
+- Refreshed README and notices for deployment, mobile demo QA, multiplayer QA, asset replacement, known limitations, reference repo, generated placeholders, and font sources.
+- Validation:
+  - `pnpm --filter @alpha7/server test` (20 tests)
+  - `pnpm --filter @alpha7/server typecheck`
+  - `pnpm --filter @alpha7/client typecheck`
+  - `pnpm --filter @alpha7/client build`
+  - `pnpm check`
+  - `curl http://localhost:2567/healthz`
+  - `curl http://localhost:5173/`
+  - `curl http://localhost:5173/editor`
+  - Two-client Colyseus smoke verified private room-code join, countdown to running, large arena patch sync, movement intents, fire intents, and readiness replication.
+- Known follow-up:
+  - Physical iPhone Safari / Android Chrome testing is still manual.
+  - Vite still warns that the main client chunk is larger than 500 kB.
+  - Reconnect is currently an error/rejoin path rather than true mid-match session resumption.
+
+## Manual browser feedback pass
+- Addressed in-app browser feedback from the live demo:
+  - Constrained the ability-charge bar inside its HUD tile by switching the fill to a clipped scale transform.
+  - Changed procedural tank barrels from full orange prisms to muted single barrels with small orange muzzle tips so aiming no longer reads as two cannons.
+  - Reworked the minimap into an aspect-correct inner map frame and renders all synced wall rectangles instead of a truncated sample.
+  - Tuned active-match HUD panels toward the `goal.png` reference with lighter glass, tighter radius, and lower shadow/blur.
+  - Added `/assets/audio/ambient-music.wav` from the user-provided local sound file and manifest-backed playback after the first user gesture for mobile browser compatibility.
+- Validation:
+  - `pnpm --filter @alpha7/client typecheck`
+  - `pnpm --filter @alpha7/client build`
+  - `pnpm --filter @alpha7/server test` (20 tests)
+  - `curl -I http://localhost:5173/assets/audio/ambient-music.wav`
+  - `curl -s http://localhost:5173/assets/manifest.json`

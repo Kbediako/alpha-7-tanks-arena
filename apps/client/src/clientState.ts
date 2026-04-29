@@ -46,7 +46,12 @@ export interface ClientPlayer {
   score: number;
   kills: number;
   deaths: number;
+  damageDealt: number;
+  damageTaken: number;
   placement: number;
+  survivalTimeMs: number;
+  joinedAt: number;
+  respawnAt: number;
   isConnected: boolean;
   isReady: boolean;
   isAlive: boolean;
@@ -104,6 +109,7 @@ export interface ArenaMapConfig {
 export interface ClientSnapshot {
   roomId: string;
   roomCode: string;
+  matchId: string;
   matchState: MatchState;
   seed: string;
   tick: number;
@@ -376,7 +382,12 @@ const snapshotPlayer = (player: PlayerSchema, selfSessionId?: string): ClientPla
   score: player.score,
   kills: player.kills,
   deaths: player.deaths,
+  damageDealt: player.damageDealt,
+  damageTaken: player.damageTaken,
   placement: player.placement,
+  survivalTimeMs: player.survivalTimeMs,
+  joinedAt: player.joinedAt,
+  respawnAt: player.respawnAt,
   isConnected: player.isConnected,
   isReady: player.isReady,
   isAlive: player.isAlive,
@@ -421,6 +432,7 @@ export const snapshotFromState = (
   return {
     roomId,
     roomCode: state.roomCode || roomId,
+    matchId: state.match.matchId,
     matchState: state.matchState,
     seed: state.seed,
     tick: state.match.tick,
@@ -481,7 +493,12 @@ export const previewSnapshot = (
     score: 0,
     kills: 0,
     deaths: 0,
+    damageDealt: 0,
+    damageTaken: 0,
     placement: 0,
+    survivalTimeMs: 0,
+    joinedAt: Date.now(),
+    respawnAt: 0,
     isConnected: true,
     isReady: false,
     isAlive: true,
@@ -493,6 +510,7 @@ export const previewSnapshot = (
   return {
     roomId: "local",
     roomCode: "LOCAL",
+    matchId: "preview-match",
     matchState: "waiting",
     seed,
     tick: 0,
