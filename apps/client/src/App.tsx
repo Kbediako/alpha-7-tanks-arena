@@ -1436,6 +1436,7 @@ export function App() {
       isActiveMatchState(snapshot.matchState)
   );
   const showResults = Boolean(snapshot && snapshot.matchState === "finished");
+  const showGameplayHud = screenMode === "playing";
   const showConnectionOverlay = Boolean(snapshot && (connectionStatus === "offline" || connectionStatus === "error"));
   const showSpectatorOverlay = Boolean(
     snapshot &&
@@ -2062,16 +2063,20 @@ export function App() {
       <div className="hud-layer" aria-label="Game HUD">
         <MatchHeader now={now} outsideSafeZone={outsideSafeZone} snapshot={displaySnapshot} />
         <MiniMap localPose={localPoseRef.current} outsideSafeZone={outsideSafeZone} snapshot={displaySnapshot} />
-        <TankStatusCard
-          collapsed={tankInfoCollapsed}
-          onToggle={() => setTankInfoCollapsed((value) => !value)}
-          player={selfPlayer}
-        />
-        <WeaponStrip player={selfPlayer} />
-        <AbilityDock assetManifest={assetManifest} onAbility={triggerAbility} player={selfPlayer} />
+        {showGameplayHud ? (
+          <>
+            <TankStatusCard
+              collapsed={tankInfoCollapsed}
+              onToggle={() => setTankInfoCollapsed((value) => !value)}
+              player={selfPlayer}
+            />
+            <WeaponStrip player={selfPlayer} />
+            <AbilityDock assetManifest={assetManifest} onAbility={triggerAbility} player={selfPlayer} />
+          </>
+        ) : null}
         {snapshot ? <ScoreboardPanel expanded={scoreboardExpanded} snapshot={snapshot} /> : null}
         {outsideSafeZone && snapshot ? <ZoneWarningBanner snapshot={snapshot} /> : null}
-        {snapshot ? (
+        {snapshot && showGameplayHud ? (
           <CompactHudBar
             outsideSafeZone={outsideSafeZone}
             player={selfPlayer}

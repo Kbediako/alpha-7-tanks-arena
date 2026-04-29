@@ -90,9 +90,13 @@ interface Runtime {
   targetZoneRing: THREE.Mesh;
   tankMeshes: Map<string, TankParts>;
   pickupMeshes: Map<string, PickupVisual>;
+  serverProjectileMeshes: Map<string, THREE.Object3D>;
   particles: Particle[];
   mapKey: string;
   lastTime: number;
+  renderWidth: number;
+  renderHeight: number;
+  pixelRatio: number;
   rafId: number;
 }
 
@@ -155,6 +159,9 @@ const canCreateWebGLContext = (): boolean => {
   const canvas = document.createElement("canvas");
   return Boolean(canvas.getContext("webgl2") ?? canvas.getContext("webgl"));
 };
+
+const isMobileLikeViewport = (): boolean =>
+  window.matchMedia("(pointer: coarse), (max-width: 760px), (max-height: 760px)").matches;
 
 const disposeObject = (object: THREE.Object3D): void => {
   object.traverse((child) => {
@@ -413,8 +420,20 @@ const updateCamera = (
   runtime.camera.position.set(centerX, 1180, centerY + 1080);
   runtime.camera.lookAt(centerX, 0, centerY);
   runtime.camera.updateProjectionMatrix();
-  runtime.renderer.setSize(rect.width, rect.height, false);
-  runtime.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  const nextWidth = Math.max(1, Math.round(rect.width));
+  const nextHeight = Math.max(1, Math.round(rect.height));
+  const nextPixelRatio = Math.min(isMobileLikeViewport() ? 1 : 1.5, window.devicePixelRatio || 1);
+  if (
+    runtime.renderWidth !== nextWidth ||
+    runtime.renderHeight !== nextHeight ||
+    runtime.pixelRatio !== nextPixelRatio
+  ) {
+    runtime.renderWidth = nextWidth;
+    runtime.renderHeight = nextHeight;
+    runtime.pixelRatio = nextPixelRatio;
+    runtime.renderer.setPixelRatio(nextPixelRatio);
+    runtime.renderer.setSize(nextWidth, nextHeight, false);
+  }
 };
 
 const rebuildMap = (
@@ -722,53 +741,65 @@ const updateParticles = (runtime: Runtime, dt: number): void => {
   }
 };
 
-const updateServerProjectiles = (runtime: Runtime, snapshot: ClientSnapshot): void => {
-  while (runtime.serverProjectileLayer.children.length > 0) {
-    const child = runtime.serverProjectileLayer.children[0];
-    if (!child) break;
-    runtime.serverProjectileLayer.remove(child);
-    disposeObject(child);
+const createServerProjectileMesh = (projectile: ClientSnapshot["projectiles"][number]): THREE.Object3D => {
+  const weapon = WEAPON_CONFIG[projectile.weaponType];
+  const color =
+    projectile.weaponType === "machine_gun"
+      ? COLORS.white
+      : projectile.weaponType === "explosive"
+        ? COLORS.warning
+        : projectile.weaponType === "light_cannon"
+          ? COLORS.blue
+          : COLORS.accentHot;
+  const group = new THREE.Group();
+
+  const shell = new THREE.Mesh(
+    new THREE.SphereGeometry(Math.max(4, projectile.radius), 10, 6),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.96 })
+  );
+  group.add(shell);
+
+  const trailLength = clamp(weapon.projectileSpeed / 18, 18, projectile.weaponType === "explosive" ? 58 : 44);
+  const trail = new THREE.Mesh(
+    new THREE.BoxGeometry(trailLength, projectile.radius * 0.9, projectile.radius * 0.9),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28 })
+  );
+  trail.position.x = -trailLength * 0.58;
+  group.add(trail);
+
+  if (projectile.weaponType === "explosive") {
+    const halo = new THREE.Mesh(
+      new THREE.RingGeometry(projectile.radius * 1.25, projectile.radius * 1.8, 20),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.22, side: THREE.DoubleSide })
+    );
+    halo.rotation.x = -Math.PI / 2;
+    halo.position.y = -6;
+    group.add(halo);
   }
 
-  for (const projectile of snapshot.projectiles.slice(0, 32)) {
-    const weapon = WEAPON_CONFIG[projectile.weaponType];
-    const color =
-      projectile.weaponType === "machine_gun"
-        ? COLORS.white
-        : projectile.weaponType === "explosive"
-          ? COLORS.warning
-          : projectile.weaponType === "light_cannon"
-            ? COLORS.blue
-            : COLORS.accentHot;
-    const group = new THREE.Group();
-    group.position.set(projectile.x, 18, projectile.y);
-    group.rotation.y = -Math.atan2(projectile.velocityY, projectile.velocityX);
+  return group;
+};
 
-    const shell = new THREE.Mesh(
-      new THREE.SphereGeometry(Math.max(4, projectile.radius), 10, 6),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.96 })
-    );
-    group.add(shell);
+const updateServerProjectiles = (runtime: Runtime, snapshot: ClientSnapshot): void => {
+  const activeIds = new Set<string>();
 
-    const trailLength = clamp(weapon.projectileSpeed / 18, 18, projectile.weaponType === "explosive" ? 58 : 44);
-    const trail = new THREE.Mesh(
-      new THREE.BoxGeometry(trailLength, projectile.radius * 0.9, projectile.radius * 0.9),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28 })
-    );
-    trail.position.x = -trailLength * 0.58;
-    group.add(trail);
-
-    if (projectile.weaponType === "explosive") {
-      const halo = new THREE.Mesh(
-        new THREE.RingGeometry(projectile.radius * 1.25, projectile.radius * 1.8, 20),
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.22, side: THREE.DoubleSide })
-      );
-      halo.rotation.x = -Math.PI / 2;
-      halo.position.y = -6;
-      group.add(halo);
+  for (const projectile of snapshot.projectiles.slice(0, 24)) {
+    activeIds.add(projectile.id);
+    let mesh = runtime.serverProjectileMeshes.get(projectile.id);
+    if (!mesh) {
+      mesh = createServerProjectileMesh(projectile);
+      runtime.serverProjectileMeshes.set(projectile.id, mesh);
+      runtime.serverProjectileLayer.add(mesh);
     }
+    mesh.position.set(projectile.x, 18, projectile.y);
+    mesh.rotation.y = -Math.atan2(projectile.velocityY, projectile.velocityX);
+  }
 
-    runtime.serverProjectileLayer.add(group);
+  for (const [id, mesh] of runtime.serverProjectileMeshes) {
+    if (activeIds.has(id)) continue;
+    runtime.serverProjectileLayer.remove(mesh);
+    disposeObject(mesh);
+    runtime.serverProjectileMeshes.delete(id);
   }
 };
 
@@ -803,9 +834,10 @@ export function ArenaRenderer({
       return undefined;
     }
 
+    const mobileLike = isMobileLikeViewport();
     const renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      antialias: !mobileLike,
       alpha: false,
       powerPreference: "high-performance"
     });
@@ -814,7 +846,7 @@ export function ArenaRenderer({
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(COLORS.ground);
-    scene.fog = new THREE.Fog(COLORS.ground, 1700, 3100);
+    scene.fog = mobileLike ? null : new THREE.Fog(COLORS.ground, 1700, 3100);
 
     const camera = new THREE.OrthographicCamera(-900, 900, 600, -600, 1, 4000);
     const ambient = new THREE.AmbientLight(0xf7f3ed, 1.85);
@@ -846,9 +878,13 @@ export function ArenaRenderer({
       targetZoneRing,
       tankMeshes: new Map(),
       pickupMeshes: new Map(),
+      serverProjectileMeshes: new Map(),
       particles: [],
       mapKey: "",
       lastTime: performance.now(),
+      renderWidth: 0,
+      renderHeight: 0,
+      pixelRatio: 0,
       rafId: 0
     };
     runtimeRef.current = runtime;
