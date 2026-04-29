@@ -1,10 +1,9 @@
 [build]
 builder = "NIXPACKS"
-buildCommand = "pnpm install --frozen-lockfile && pnpm build:shared && pnpm build:server"
+buildCommand = "pnpm install --frozen-lockfile && pnpm build:shared && pnpm build:client && pnpm build:server"
 
 [deploy]
 startCommand = "pnpm --filter @alpha7/server start"
 healthcheckPath = "/healthz"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
-

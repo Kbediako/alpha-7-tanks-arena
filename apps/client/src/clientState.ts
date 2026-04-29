@@ -186,7 +186,12 @@ export const isWaitingRoomState = (matchState: MatchState): boolean =>
 
 export const endpointFromEnv = (): string => {
   const configured = import.meta.env.VITE_WS_URL;
-  return typeof configured === "string" && configured.trim() ? configured.trim() : "ws://localhost:2567";
+  if (typeof configured === "string" && configured.trim()) return configured.trim();
+  if (typeof window !== "undefined" && window.location.host) {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${window.location.host}`;
+  }
+  return "ws://localhost:2567";
 };
 
 export const fallbackMapConfig = (seed = "local"): ArenaMapConfig => {

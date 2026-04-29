@@ -1,4 +1,7 @@
+import { existsSync } from "node:fs";
 import { createServer } from "node:http";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Encoder } from "@colyseus/schema";
 import cors from "cors";
 import express from "express";
@@ -11,6 +14,9 @@ import { BattleRoyaleRoom } from "./rooms/BattleRoyaleRoom.js";
 Encoder.BUFFER_SIZE = 96 * 1024;
 
 const app = express();
+const serverDir = dirname(fileURLToPath(import.meta.url));
+const clientDistPath = resolve(serverDir, "../../client/dist");
+const clientIndexPath = resolve(clientDistPath, "index.html");
 
 const isAllowedOrigin = (origin: string | undefined): boolean =>
   !origin || serverConfig.allowedOrigins.includes(origin);
@@ -51,6 +57,23 @@ app.get("/healthz", (_req, res) => {
   };
   res.json(payload);
 });
+
+if (existsSync(clientIndexPath)) {
+  app.use(express.static(clientDistPath));
+  app.use((req, res, next) => {
+    if (
+      req.method !== "GET" ||
+      req.path.startsWith("/matchmake") ||
+      req.path.startsWith("/colyseus") ||
+      req.path.startsWith("/healthz") ||
+      !req.accepts("html")
+    ) {
+      next();
+      return;
+    }
+    res.sendFile(clientIndexPath);
+  });
+}
 
 const httpServer = createServer(app);
 const gameServer = new Server({
