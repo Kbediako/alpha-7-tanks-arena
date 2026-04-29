@@ -711,6 +711,7 @@ function AbilityDock({
   const ability = ABILITY_CONFIG[player.abilityType];
   const chargeTarget = Math.max(ability.chargeCost, 100);
   const chargeRatio = clamp(player.abilityCharge / chargeTarget, 0, 1);
+  const chargePercent = Math.round(chargeRatio * 100);
   const ready = player.abilityCharge >= ability.chargeCost && player.abilityCooldownMs <= 0;
 
   return (
@@ -719,7 +720,7 @@ function AbilityDock({
         {abilityIcon(player.abilityType, 21, assetManifest)}
         <span>
           <strong>{ability.name}</strong>
-          <small>{ready ? "Ready" : `${Math.round(player.abilityCharge)} charge`}</small>
+          <small>{ready ? "Ready" : `${chargePercent}% charge`}</small>
         </span>
       </button>
       <div className="ability-cell">
@@ -728,8 +729,7 @@ function AbilityDock({
       </div>
       <div className="ability-cell ability-charge-cell">
         <span>Charge</span>
-        <strong>{Math.round(player.abilityCharge)}</strong>
-        <i style={{ transform: `scaleX(${chargeRatio})` }} />
+        <strong>{chargePercent}%</strong>
       </div>
       <div className="ability-cell">
         <span>Fire</span>
